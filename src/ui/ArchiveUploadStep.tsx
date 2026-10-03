@@ -73,10 +73,20 @@ export function ArchiveUploadStep({
         Upload your Minecraft files
       </h2>
       <p className="hint-text">
-        Pick your <code>26.3.jar</code> client file (usually under{" "}
-        <code>~/Library/Application Support/minecraft/versions/26.3/</code>) or any resource pack
-        <code>.zip</code>. Everything is read locally in your browser — nothing is uploaded anywhere, and
-        it's remembered for next time so you only need to do this once.
+        Pick your <code>26.3.jar</code> client file or any resource pack <code>.zip</code>. It's usually
+        under:
+      </p>
+      <ul className="hint-text file-path-list">
+        <li>
+          <strong>Mac:</strong> <code>~/Library/Application Support/minecraft/versions/26.3/</code>
+        </li>
+        <li>
+          <strong>Windows:</strong> <code>%APPDATA%\.minecraft\versions\26.3\</code>
+        </li>
+      </ul>
+      <p className="hint-text">
+        Everything is read locally in your browser — nothing is uploaded anywhere, and it's remembered for
+        next time so you only need to do this once.
       </p>
       {loadedFileName === null ? (
         <input

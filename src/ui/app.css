@@ -153,6 +153,15 @@ label.checkbox {
   font-size: 13px;
 }
 
+.file-path-list {
+  margin: 4px 0;
+  padding-left: 18px;
+}
+
+.file-path-list li {
+  margin: 2px 0;
+}
+
 .block-grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(130px, 1fr));
