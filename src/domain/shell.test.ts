@@ -1,10 +1,10 @@
 import { describe, expect, it } from "vitest";
 import type { DecodedTexture } from "../assets/textureDecoder.ts";
-import { rgb8ToOklab } from "./color.ts";
+import { averageLinearRgb, linearRgbToOklab, rgb8ToLinearRgb, rgb8ToOklab } from "./color.ts";
 import { CUBE_FACE_DIRECTIONS, type CubeFaceDirection } from "./faces.ts";
 import type { PaletteBlock } from "./palette.ts";
 import { hollowBlockCount, solidBlockCount } from "./scale.ts";
-import { buildVoxelGrid, governingFace, isShellVoxel, pixelRegionForVoxelCoord, positionOnFace } from "./shell.ts";
+import { buildVoxelGrid, governingFaces, isShellVoxel, pixelRegionForVoxelCoord, positionOnFace } from "./shell.ts";
 
 describe("isShellVoxel", () => {
   it("every voxel of a 1-edge or 2-edge cube is on the shell", () => {
@@ -31,23 +31,23 @@ describe("isShellVoxel", () => {
   });
 });
 
-describe("governingFace", () => {
-  it("a 3-way corner tie resolves to the Y face", () => {
-    expect(governingFace(0, 0, 0, 16)).toBe("down");
-    expect(governingFace(15, 15, 15, 16)).toBe("up");
+describe("governingFaces", () => {
+  it("a 3-way corner tie resolves to just the Y face — the cap owns every corner too", () => {
+    expect(governingFaces(0, 0, 0, 16)).toEqual(["down"]);
+    expect(governingFaces(15, 15, 15, 16)).toEqual(["up"]);
   });
 
-  it("a Y/Z edge tie (not touching X) resolves to the Y face", () => {
-    expect(governingFace(5, 15, 0, 16)).toBe("up");
+  it("a Y/Z edge tie (not touching X) resolves to just the Y face — the cap owns its rim", () => {
+    expect(governingFaces(5, 15, 0, 16)).toEqual(["up"]);
   });
 
-  it("a Z/X edge tie (not touching Y) resolves to the Z face", () => {
-    expect(governingFace(0, 5, 0, 16)).toBe("north");
+  it("a Z/X edge tie (not touching Y) returns BOTH tied side faces, to blend — neither has a principled claim over the other", () => {
+    expect(governingFaces(0, 5, 0, 16)).toEqual(["north", "west"]);
   });
 
-  it("an interior voxel still resolves deterministically to its nearest face", () => {
-    // y-boundary-distance 7, z-boundary-distance 1, x-boundary-distance 7 -> Z (north) wins.
-    expect(governingFace(8, 8, 1, 16)).toBe("north");
+  it("an interior voxel still resolves deterministically to a single nearest face", () => {
+    // y-boundary-distance 7, z-boundary-distance 1, x-boundary-distance 7 -> Z (north) wins outright, no tie.
+    expect(governingFaces(8, 8, 1, 16)).toEqual(["north"]);
   });
 });
 
@@ -164,6 +164,7 @@ function paletteBlock(blockId: string, rgb: readonly [number, number, number]): 
 
 const RED: readonly [number, number, number] = [255, 0, 0];
 const GREEN: readonly [number, number, number] = [0, 255, 0];
+const BLUE: readonly [number, number, number] = [0, 0, 255];
 const PALETTE: PaletteBlock[] = [paletteBlock("red_wool", RED), paletteBlock("green_wool", GREEN)];
 
 function uniformFaceTextures(rgb: readonly [number, number, number], size = 16): Record<CubeFaceDirection, DecodedTexture> {
@@ -247,6 +248,39 @@ describe("buildVoxelGrid", () => {
       const voxel = voxelAt.get(`${x},${y},${z}`);
       expect(voxel?.paletteBlock.blockId, `at (${x},${y},${z})`).toBe(expectedBlockId);
     }
+  });
+
+  it("blends two side faces at a side-to-side edge, but still lets Y win outright (no blend) at a Y edge — the cap keeps owning its rim", () => {
+    const sourceFaceTextures = uniformFaceTextures(RED); // up stays RED too
+    sourceFaceTextures.north = solidTexture(16, RED);
+    sourceFaceTextures.west = solidTexture(16, BLUE);
+
+    const blendedLinear = averageLinearRgb([
+      rgb8ToLinearRgb({ r: RED[0], g: RED[1], b: RED[2] }),
+      rgb8ToLinearRgb({ r: BLUE[0], g: BLUE[1], b: BLUE[2] }),
+    ]);
+    const blendBlock: PaletteBlock = {
+      blockId: "blend_wool",
+      resourceLocation: "minecraft:blend_wool",
+      color: linearRgbToOklab(blendedLinear),
+      costTier: "common",
+    };
+    const palette = [...PALETTE, blendBlock];
+
+    const voxels = buildVoxelGrid({ edgeBlocks: 16, fillStyle: "hollow", sourceFaceTextures, palette });
+    const voxelAt = new Map(voxels.map((voxel) => [`${voxel.x},${voxel.y},${voxel.z}`, voxel]));
+
+    // (0, 5, 0): x=0 and z=0 both boundary, y=5 interior — a genuine
+    // side-to-side (west meets north) edge: RED blended with BLUE.
+    expect(voxelAt.get("0,5,0")?.paletteBlock.blockId).toBe("blend_wool");
+
+    // (5, 15, 0): y=15 AND z=0 are both boundary too, but Y must still
+    // win outright — up is RED, exactly matching north's own RED, not
+    // blend_wool, proving the cap overrides rather than blends here.
+    expect(voxelAt.get("5,15,0")?.paletteBlock.blockId).toBe("red_wool");
+
+    // Sanity: an ordinary flat position on north alone is unaffected.
+    expect(voxelAt.get("8,8,0")?.paletteBlock.blockId).toBe("red_wool");
   });
 
   it("rejects an empty palette", () => {

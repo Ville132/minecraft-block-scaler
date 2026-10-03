@@ -65,33 +65,44 @@ function nearestBoundary(coord: number, edgeBlocks: number): AxisBoundary {
 }
 
 /**
- * Which face "owns" a voxel's appearance, implementing PLAN.md's edge-
- * ownership rule (Y beats Z beats X) for boundary voxels that touch
- * more than one face, and extending the same priority order to interior
- * voxels (relevant only for solid fill, where every position still
- * needs some texture to sample): the governing face is whichever axis
- * is closest to its boundary, with Y > Z > X breaking exact ties. On
- * the shell this reduces exactly to the stated rule, since a voxel on
- * two or three faces at once has a boundary distance of 0 on each of
- * them — a tie, which Y > Z > X resolves.
+ * Which face(s) "own" a voxel's appearance — usually exactly one, but a
+ * voxel on a SIDE-TO-SIDE edge (e.g. where west meets north) returns
+ * BOTH tied candidates, for {@link buildVoxelGrid} to blend, rather
+ * than arbitrarily picking one: unlike Y, neither side face has a
+ * principled claim to override the other there.
+ *
+ * Implements PLAN.md's edge-ownership rule (Y beats the rest) for
+ * boundary voxels that touch more than one face, and extends the same
+ * priority to interior voxels (relevant only for solid fill, where
+ * every position still needs some texture to sample): the governing
+ * axis/axes are whichever is closest to its boundary. Y wins outright
+ * whenever it is at or within that minimum distance — "the cap owns
+ * the rim" (and, by the same reasoning, every corner too, since a
+ * corner is just a rim position where two sides also tie). Only when Y
+ * is strictly farther, and Z and X are tied with each other, is there
+ * a genuine side-to-side tie with no such reason to prefer one, which
+ * is the one case this returns two faces for.
  */
-export function governingFace(x: number, y: number, z: number, edgeBlocks: number): CubeFaceDirection {
+export function governingFaces(
+  x: number,
+  y: number,
+  z: number,
+  edgeBlocks: number,
+): readonly [CubeFaceDirection] | readonly [CubeFaceDirection, CubeFaceDirection] {
   const yBoundary = nearestBoundary(y, edgeBlocks);
   const zBoundary = nearestBoundary(z, edgeBlocks);
   const xBoundary = nearestBoundary(x, edgeBlocks);
+  const minDistance = Math.min(yBoundary.distance, zBoundary.distance, xBoundary.distance);
 
-  let bestAxis: Axis = "y";
-  let best = yBoundary;
-  if (zBoundary.distance < best.distance) {
-    bestAxis = "z";
-    best = zBoundary;
+  if (yBoundary.distance === minDistance) {
+    return [faceForOrientation("y", yBoundary.sign)];
   }
-  if (xBoundary.distance < best.distance) {
-    bestAxis = "x";
-    best = xBoundary;
+  const zTied = zBoundary.distance === minDistance;
+  const xTied = xBoundary.distance === minDistance;
+  if (zTied && xTied) {
+    return [faceForOrientation("z", zBoundary.sign), faceForOrientation("x", xBoundary.sign)];
   }
-
-  return faceForOrientation(bestAxis, best.sign);
+  return zTied ? [faceForOrientation("z", zBoundary.sign)] : [faceForOrientation("x", xBoundary.sign)];
 }
 
 /**
@@ -214,6 +225,32 @@ function averageColorInRegion(texture: DecodedTexture, uRegion: PixelRegion, vRe
   return averageLinearRgb(samples);
 }
 
+interface FaceSample {
+  readonly texture: DecodedTexture;
+  readonly uRegion: PixelRegion;
+  readonly vRegion: PixelRegion;
+}
+
+/** The pixel region each of `directions` (1 for most voxels, 2 for a side-to-side edge — see {@link governingFaces}) samples at (x, y, z), region info only — no pixel scanning yet, so this is cheap enough to compute before checking the cache. */
+function faceSamplesAt(
+  directions: readonly CubeFaceDirection[],
+  x: number,
+  y: number,
+  z: number,
+  edgeBlocks: number,
+  sourceFaceTextures: Readonly<Record<CubeFaceDirection, DecodedTexture>>,
+): FaceSample[] {
+  return directions.map((direction) => {
+    const texture = sourceFaceTextures[direction];
+    const { uCoord, vCoord } = faceLocalCoordinates(direction, x, y, z);
+    return {
+      texture,
+      uRegion: pixelRegionForVoxelCoord(uCoord, edgeBlocks, texture.width),
+      vRegion: pixelRegionForVoxelCoord(vCoord, edgeBlocks, texture.height),
+    };
+  });
+}
+
 /**
  * Builds every filled voxel of a replica, each already resolved to a
  * concrete palette block.
@@ -255,16 +292,21 @@ export function buildVoxelGrid(params: BuildVoxelGridParams): Voxel[] {
       for (let x = 0; x < edgeBlocks; x++) {
         if (fillStyle === "hollow" && !isShellVoxel(x, y, z, edgeBlocks)) continue;
 
-        const direction = governingFace(x, y, z, edgeBlocks);
-        const texture = sourceFaceTextures[direction];
-        const { uCoord, vCoord } = faceLocalCoordinates(direction, x, y, z);
-        const uRegion = pixelRegionForVoxelCoord(uCoord, edgeBlocks, texture.width);
-        const vRegion = pixelRegionForVoxelCoord(vCoord, edgeBlocks, texture.height);
+        const directions = governingFaces(x, y, z, edgeBlocks);
+        const samples = faceSamplesAt(directions, x, y, z, edgeBlocks, sourceFaceTextures);
+        const cacheKey = directions
+          .map((direction, i) => `${direction}:${samples[i]!.uRegion.start}:${samples[i]!.vRegion.start}`)
+          .join("+");
 
-        const cacheKey = `${direction}:${uRegion.start}:${vRegion.start}`;
         let paletteBlock = resolvedColorCache.get(cacheKey);
         if (paletteBlock === undefined) {
-          const color = linearRgbToOklab(averageColorInRegion(texture, uRegion, vRegion));
+          // A single sample on most voxels; exactly two, blended, on a
+          // side-to-side edge (see governingFaces) — averageLinearRgb
+          // already handles either count uniformly.
+          const linearColors = samples.map((sample) =>
+            averageColorInRegion(sample.texture, sample.uRegion, sample.vRegion),
+          );
+          const color = linearRgbToOklab(averageLinearRgb(linearColors));
           paletteBlock = findNearestOklab(color, paletteCandidates);
           resolvedColorCache.set(cacheKey, paletteBlock);
         }
