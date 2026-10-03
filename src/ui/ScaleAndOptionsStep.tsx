@@ -39,7 +39,14 @@ export function ScaleAndOptionsStep({
 }: ScaleAndOptionsStepProps) {
   const [customSizeText, setCustomSizeText] = useState("");
 
-  const scaleOptions = useMemo(() => listScaleOptions(DEFAULT_MAX_EDGE), []);
+  // Only the upscaled ("exact") sizes are offered as default cards —
+  // the downscaled ("reduced") ones (1/2/4/8) lose real texture detail
+  // and are rarely what someone wants for a GIANT block; they're still
+  // reachable via the custom-size input below for anyone who does want one.
+  const scaleOptions = useMemo(
+    () => listScaleOptions(DEFAULT_MAX_EDGE).filter((edge) => classifyScale(edge).kind === "exact"),
+    [],
+  );
 
   const customSizeValue = Number.parseInt(customSizeText, 10);
   const customSizeIsValid = customSizeText.trim() !== "" && Number.isInteger(customSizeValue) && customSizeValue > 0;

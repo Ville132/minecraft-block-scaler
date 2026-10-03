@@ -201,7 +201,25 @@ label.checkbox {
 }
 
 .file-path-list li {
-  margin: 2px 0;
+  margin: 4px 0;
+  line-height: 2;
+}
+
+kbd {
+  display: inline-block;
+  padding: 1px 6px;
+  border: 1px solid var(--border);
+  border-bottom-width: 2px;
+  border-radius: 3px;
+  background: var(--panel-raised);
+  color: var(--text);
+  font-family: inherit;
+  font-size: 11px;
+}
+
+.copy-button {
+  padding: 2px 8px;
+  font-size: 11px;
 }
 
 .block-grid {
@@ -321,6 +339,12 @@ label.checkbox {
   cursor: pointer;
 }
 
+.material-table-wrap {
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  overflow: hidden;
+}
+
 .material-table {
   width: 100%;
   border-collapse: collapse;
@@ -330,21 +354,54 @@ label.checkbox {
 .material-table th,
 .material-table td {
   text-align: left;
-  padding: 6px 8px;
-  border-bottom: 1px solid var(--border);
+  padding: 9px 12px;
 }
 
 .material-table th {
+  background: var(--panel-raised);
   color: var(--text-dim);
-  font-weight: 500;
+  font-weight: 600;
   text-transform: uppercase;
-  font-size: 11px;
-  letter-spacing: 0.04em;
+  font-size: 10.5px;
+  letter-spacing: 0.05em;
+  border-bottom: 1px solid var(--border);
 }
 
+.material-table tbody tr {
+  border-bottom: 1px solid var(--border);
+}
+
+.material-table tbody tr:last-child {
+  border-bottom: none;
+}
+
+.material-table tbody tr:nth-child(even) {
+  background: rgba(255, 255, 255, 0.025);
+}
+
+.material-table tbody tr:hover {
+  background: rgba(124, 184, 87, 0.07);
+}
+
+.material-table td.block-name {
+  font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  font-size: 12.5px;
+}
+
+.material-table th.count,
 .material-table td.count {
   text-align: right;
   font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.material-table td.count.primary {
+  font-weight: 700;
+  color: var(--text);
+}
+
+.material-table td.count:not(.primary) {
+  color: var(--text-dim);
 }
 
 .export-row {

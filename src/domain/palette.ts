@@ -7,7 +7,12 @@
  */
 
 import { listBlockIds, texturePath, textureMetaPath, type MinecraftArchive } from "../assets/archiveReader.ts";
-import { resolveSingleVariantCubeModel, type ResolvedCubeModel } from "../assets/modelResolver.ts";
+import {
+  hasAxisVariants,
+  resolveAxisVariantCubeModel,
+  resolveSingleVariantCubeModel,
+  type ResolvedCubeModel,
+} from "../assets/modelResolver.ts";
 import { decodePngTexture, type DecodedTexture } from "../assets/textureDecoder.ts";
 import { averageLinearRgb, linearRgbToOklab, rgb8ToLinearRgb, type LinearRgb, type Oklab } from "./color.ts";
 
@@ -135,6 +140,15 @@ export function costTierOf(blockId: string): CostTier {
   return PRECIOUS_MATERIAL_BLOCK_IDS.has(blockId) ? "precious" : "common";
 }
 
+/** The exclusion-category checks shared by {@link buildPalette} and {@link listAxisVariantBlocks} — unbuildable is absolute, the rest are gated by `options`. */
+function passesExclusionFilters(blockId: string, options: PaletteOptions): boolean {
+  if (isUnbuildableBlock(blockId)) return false;
+  if (!options.allowGravityBlocks && isGravityBlock(blockId)) return false;
+  if (!options.allowBiomeTintedBlocks && isBiomeTintedBlock(blockId)) return false;
+  if (options.survivalFriendlyOnly && costTierOf(blockId) === "precious") return false;
+  return true;
+}
+
 /** Injected so tests can supply a deterministic fake instead of a real PNG decoder (see `textureDecoder.ts`'s header comment for why that decoder itself has no automated test). */
 export type TextureDecoder = (pngBytes: Uint8Array) => Promise<DecodedTexture>;
 
@@ -225,12 +239,7 @@ export async function buildPalette(
   const paletteBlocks: PaletteBlock[] = [];
 
   for (const blockId of listBlockIds(archive)) {
-    if (isUnbuildableBlock(blockId)) continue;
-    if (!options.allowGravityBlocks && isGravityBlock(blockId)) continue;
-    if (!options.allowBiomeTintedBlocks && isBiomeTintedBlock(blockId)) continue;
-
-    const costTier = costTierOf(blockId);
-    if (options.survivalFriendlyOnly && costTier === "precious") continue;
+    if (!passesExclusionFilters(blockId, options)) continue;
 
     const model = resolveSingleVariantCubeModel(archive, blockId);
     if (model === undefined) continue;
@@ -238,8 +247,43 @@ export async function buildPalette(
     const color = await representativeColor(archive, model, decodeTexture);
     if (color === undefined) continue;
 
-    paletteBlocks.push({ blockId, resourceLocation: `minecraft:${blockId}`, color, costTier });
+    paletteBlocks.push({ blockId, resourceLocation: `minecraft:${blockId}`, color, costTier: costTierOf(blockId) });
   }
 
   return paletteBlocks;
+}
+
+/**
+ * Lists axis-pillar blocks (logs, wood, basalt, quartz/purpur pillars,
+ * etc. — see `assets/modelResolver.ts`'s `hasAxisVariants`) the user
+ * can pick as a scale *source*, each resolved in its `"upright"`
+ * orientation for the picker's color swatch. A separate list from
+ * {@link buildPalette} rather than merged into it: fill material never
+ * needs an orientation choice, so keeping that palette exactly as
+ * single-variant-only avoids giving every other part of the app a
+ * concept it has no use for. The same exclusion rules still apply —
+ * an axis-pillar block makes no exception for being precious,
+ * gravity-affected, or biome-tinted.
+ */
+export async function listAxisVariantBlocks(
+  archive: MinecraftArchive,
+  options: PaletteOptions = DEFAULT_PALETTE_OPTIONS,
+  decodeTexture: TextureDecoder = decodePngTexture,
+): Promise<PaletteBlock[]> {
+  const blocks: PaletteBlock[] = [];
+
+  for (const blockId of listBlockIds(archive)) {
+    if (!passesExclusionFilters(blockId, options)) continue;
+    if (!hasAxisVariants(archive, blockId)) continue;
+
+    const model = resolveAxisVariantCubeModel(archive, blockId, "upright");
+    if (model === undefined) continue;
+
+    const color = await representativeColor(archive, model, decodeTexture);
+    if (color === undefined) continue;
+
+    blocks.push({ blockId, resourceLocation: `minecraft:${blockId}`, color, costTier: costTierOf(blockId) });
+  }
+
+  return blocks;
 }

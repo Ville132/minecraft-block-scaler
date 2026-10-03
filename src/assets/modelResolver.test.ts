@@ -1,7 +1,7 @@
 import { zipSync } from "fflate";
 import { describe, expect, it } from "vitest";
 import { readMinecraftArchive, type MinecraftArchive } from "./archiveReader.ts";
-import { resolveSingleVariantCubeModel } from "./modelResolver.ts";
+import { hasAxisVariants, resolveAxisVariantCubeModel, resolveSingleVariantCubeModel } from "./modelResolver.ts";
 
 function archiveOf(files: Record<string, unknown>): MinecraftArchive {
   const entries: Record<string, Uint8Array> = {};
@@ -248,5 +248,124 @@ describe("resolveSingleVariantCubeModel — rejections", () => {
       },
     });
     expect(resolveSingleVariantCubeModel(archive, "cobblestone")).toBeUndefined();
+  });
+});
+
+// A faithful miniature of oak_log's real data (fetched from Mojang's
+// actual asset files during development): axis=y uses the base
+// cube_column model with no rotation; axis=z and axis=x reference a
+// SEPARATE "_horizontal" model whose local face layout is identical,
+// reoriented purely by the blockstate's own x/y rotation fields. This
+// is the real mechanism (see domain/faces.ts's rotateFaceDirection) —
+// not three different models, one model rotated two different ways.
+const PILLAR_ELEMENT_FACES = {
+  down: { texture: "#end" },
+  up: { texture: "#end" },
+  north: { texture: "#side" },
+  south: { texture: "#side" },
+  east: { texture: "#side" },
+  west: { texture: "#side" },
+};
+const PILLAR_CUBE_ELEMENTS = [{ from: [0, 0, 0], to: [16, 16, 16], faces: PILLAR_ELEMENT_FACES }];
+
+function oakLogArchive(overrides: Record<string, unknown> = {}): MinecraftArchive {
+  return archiveOf({
+    "assets/minecraft/blockstates/oak_log.json": {
+      variants: {
+        "axis=y": { model: "minecraft:block/oak_log" },
+        "axis=z": { model: "minecraft:block/oak_log_horizontal", x: 90 },
+        "axis=x": { model: "minecraft:block/oak_log_horizontal", x: 90, y: 90 },
+      },
+    },
+    "assets/minecraft/models/block/oak_log.json": {
+      parent: "minecraft:block/cube_column",
+      textures: { end: "minecraft:block/oak_log_top", side: "minecraft:block/oak_log" },
+    },
+    "assets/minecraft/models/block/oak_log_horizontal.json": {
+      parent: "minecraft:block/cube_column_horizontal",
+      textures: { end: "minecraft:block/oak_log_top", side: "minecraft:block/oak_log" },
+    },
+    "assets/minecraft/models/block/cube_column.json": { elements: PILLAR_CUBE_ELEMENTS },
+    "assets/minecraft/models/block/cube_column_horizontal.json": { elements: PILLAR_CUBE_ELEMENTS },
+    ...overrides,
+  });
+}
+
+describe("hasAxisVariants", () => {
+  it("is true for a real axis=x/y/z-shaped blockstate", () => {
+    expect(hasAxisVariants(oakLogArchive(), "oak_log")).toBe(true);
+  });
+
+  it("is false for a single-variant block", () => {
+    expect(hasAxisVariants(cubeAllArchive(), "cobblestone")).toBe(false);
+  });
+
+  it("is false when only some axis keys are present", () => {
+    const archive = oakLogArchive({
+      "assets/minecraft/blockstates/oak_log.json": {
+        variants: {
+          "axis=y": { model: "minecraft:block/oak_log" },
+          "axis=z": { model: "minecraft:block/oak_log_horizontal", x: 90 },
+        },
+      },
+    });
+    expect(hasAxisVariants(archive, "oak_log")).toBe(false);
+  });
+
+  it("is false for a missing block", () => {
+    expect(hasAxisVariants(oakLogArchive(), "does_not_exist")).toBe(false);
+  });
+});
+
+describe("resolveAxisVariantCubeModel", () => {
+  it("'upright' puts the end-cap texture on up/down and the side texture on the 4 sides", () => {
+    const result = resolveAxisVariantCubeModel(oakLogArchive(), "oak_log", "upright");
+    expect(result).toEqual({
+      faceTextureIds: {
+        down: "block/oak_log_top",
+        up: "block/oak_log_top",
+        north: "block/oak_log",
+        south: "block/oak_log",
+        east: "block/oak_log",
+        west: "block/oak_log",
+      },
+    });
+  });
+
+  it("'sideways' puts the end-cap texture on north/south, matching real axis=z rotation", () => {
+    const result = resolveAxisVariantCubeModel(oakLogArchive(), "oak_log", "sideways");
+    expect(result).toEqual({
+      faceTextureIds: {
+        down: "block/oak_log",
+        up: "block/oak_log",
+        north: "block/oak_log_top",
+        south: "block/oak_log_top",
+        east: "block/oak_log",
+        west: "block/oak_log",
+      },
+    });
+  });
+
+  it("'sideways' is not identical to 'upright' (guards against the rotation silently being a no-op)", () => {
+    const upright = resolveAxisVariantCubeModel(oakLogArchive(), "oak_log", "upright");
+    const sideways = resolveAxisVariantCubeModel(oakLogArchive(), "oak_log", "sideways");
+    expect(sideways).not.toEqual(upright);
+  });
+
+  it("rejects a block with no axis variants", () => {
+    expect(resolveAxisVariantCubeModel(cubeAllArchive(), "cobblestone", "upright")).toBeUndefined();
+  });
+
+  it("rejects an invalid (non-multiple-of-90) rotation value", () => {
+    const archive = oakLogArchive({
+      "assets/minecraft/blockstates/oak_log.json": {
+        variants: {
+          "axis=y": { model: "minecraft:block/oak_log" },
+          "axis=z": { model: "minecraft:block/oak_log_horizontal", x: 45 },
+          "axis=x": { model: "minecraft:block/oak_log_horizontal", x: 90, y: 90 },
+        },
+      },
+    });
+    expect(resolveAxisVariantCubeModel(archive, "oak_log", "sideways")).toBeUndefined();
   });
 });

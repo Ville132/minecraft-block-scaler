@@ -9,6 +9,7 @@ import {
   isBiomeTintedBlock,
   isGravityBlock,
   isUnbuildableBlock,
+  listAxisVariantBlocks,
   type TextureDecoder,
 } from "./palette.ts";
 
@@ -241,5 +242,93 @@ describe("buildPalette", () => {
     // distinct from either texture alone.
     expect(twoTone?.color.L).not.toBeCloseTo(rgb8ToOklab({ r: 255, g: 215, b: 0 }).L, 2);
     expect(twoTone?.color.L).not.toBeCloseTo(rgb8ToOklab({ r: 136, g: 136, b: 136 }).L, 2);
+  });
+});
+
+// --- listAxisVariantBlocks: a complete, resolvable oak_log-shaped
+// fixture (unlike testArchive()'s deliberately-incomplete oak_log,
+// which only exists to prove buildPalette excludes it).
+
+const PILLAR_ELEMENT_FACES = {
+  down: { texture: "#end" },
+  up: { texture: "#end" },
+  north: { texture: "#side" },
+  south: { texture: "#side" },
+  east: { texture: "#side" },
+  west: { texture: "#side" },
+};
+const PILLAR_CUBE_ELEMENTS = [{ from: [0, 0, 0], to: [16, 16, 16], faces: PILLAR_ELEMENT_FACES }];
+
+function oakLogFiles(blockId: string, endTextureKey: string, sideTextureKey: string): Record<string, unknown> {
+  return {
+    [`assets/minecraft/blockstates/${blockId}.json`]: {
+      variants: {
+        "axis=y": { model: `minecraft:block/${blockId}` },
+        "axis=z": { model: `minecraft:block/${blockId}_horizontal`, x: 90 },
+        "axis=x": { model: `minecraft:block/${blockId}_horizontal`, x: 90, y: 90 },
+      },
+    },
+    [`assets/minecraft/models/block/${blockId}.json`]: {
+      parent: "minecraft:block/cube_column",
+      textures: { end: `minecraft:block/${blockId}_top`, side: `minecraft:block/${blockId}` },
+    },
+    [`assets/minecraft/models/block/${blockId}_horizontal.json`]: {
+      parent: "minecraft:block/cube_column_horizontal",
+      textures: { end: `minecraft:block/${blockId}_top`, side: `minecraft:block/${blockId}` },
+    },
+    "assets/minecraft/models/block/cube_column.json": { elements: PILLAR_CUBE_ELEMENTS },
+    "assets/minecraft/models/block/cube_column_horizontal.json": { elements: PILLAR_CUBE_ELEMENTS },
+    [`assets/minecraft/textures/block/${blockId}_top.png`]: endTextureKey,
+    [`assets/minecraft/textures/block/${blockId}.png`]: sideTextureKey,
+  };
+}
+
+function axisVariantTestArchive(): MinecraftArchive {
+  return archiveOf({
+    ...cubeAllBlockFiles("cobblestone", "GRAY"),
+    ...oakLogFiles("oak_log", "TAN", "GREEN"),
+    // Real gold_block isn't axis-shaped in vanilla; giving it this shape
+    // here is purely to test that the precious-tier exclusion applies
+    // regardless of a block's actual geometry — costTierOf is a plain
+    // id lookup, so this is a valid (if unrealistic) fixture for that.
+    ...oakLogFiles("gold_block", "YELLOW", "YELLOW"),
+  });
+}
+
+describe("listAxisVariantBlocks", () => {
+  it("includes a real axis-pillar block, resolved via its 'upright' orientation", async () => {
+    const blocks = await listAxisVariantBlocks(axisVariantTestArchive(), undefined, fakeDecodeTexture);
+    const oakLog = blocks.find((block) => block.blockId === "oak_log");
+    expect(oakLog).toBeDefined();
+    expect(oakLog?.resourceLocation).toBe("minecraft:oak_log");
+    expect(oakLog?.costTier).toBe("common");
+  });
+
+  it("does not include single-variant blocks", async () => {
+    const blocks = await listAxisVariantBlocks(axisVariantTestArchive(), undefined, fakeDecodeTexture);
+    expect(blocks.map((b) => b.blockId)).not.toContain("cobblestone");
+  });
+
+  it("applies the same exclusion filters as buildPalette (precious tier, by default)", async () => {
+    const blocks = await listAxisVariantBlocks(axisVariantTestArchive(), undefined, fakeDecodeTexture);
+    expect(blocks.map((b) => b.blockId)).not.toContain("gold_block");
+
+    const relaxed = await listAxisVariantBlocks(
+      axisVariantTestArchive(),
+      { survivalFriendlyOnly: false, allowGravityBlocks: false, allowBiomeTintedBlocks: false },
+      fakeDecodeTexture,
+    );
+    const goldBlock = relaxed.find((b) => b.blockId === "gold_block");
+    expect(goldBlock?.costTier).toBe("precious");
+  });
+
+  it("buildPalette's output is disjoint from listAxisVariantBlocks' (a block is never both)", async () => {
+    const archive = axisVariantTestArchive();
+    const fillPalette = await buildPalette(archive, undefined, fakeDecodeTexture);
+    const axisBlocks = await listAxisVariantBlocks(archive, undefined, fakeDecodeTexture);
+    const fillIds = new Set(fillPalette.map((b) => b.blockId));
+    for (const axisBlock of axisBlocks) {
+      expect(fillIds.has(axisBlock.blockId)).toBe(false);
+    }
   });
 });

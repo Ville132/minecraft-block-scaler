@@ -26,28 +26,30 @@ export function ResultPanel({ result, edgeBlocks }: ResultPanelProps) {
         {result.materialList.length === 1 ? "" : "s"}.
       </p>
 
-      <table className="material-table">
-        <thead>
-          <tr>
-            <th>Block</th>
-            <th>Count</th>
-            <th>Shulkers</th>
-            <th>Stacks</th>
-            <th>Loose</th>
-          </tr>
-        </thead>
-        <tbody>
-          {result.materialList.map((entry) => (
-            <tr key={entry.blockId}>
-              <td>{entry.resourceLocation}</td>
-              <td className="count">{entry.count.toLocaleString()}</td>
-              <td className="count">{entry.breakdown.shulkerBoxes || ""}</td>
-              <td className="count">{entry.breakdown.stacks || ""}</td>
-              <td className="count">{entry.breakdown.singles || ""}</td>
+      <div className="material-table-wrap">
+        <table className="material-table">
+          <thead>
+            <tr>
+              <th>Block</th>
+              <th className="count">Count</th>
+              <th className="count">Shulkers</th>
+              <th className="count">Stacks</th>
+              <th className="count">Loose</th>
             </tr>
-          ))}
-        </tbody>
-      </table>
+          </thead>
+          <tbody>
+            {result.materialList.map((entry) => (
+              <tr key={entry.blockId}>
+                <td className="block-name">{entry.resourceLocation}</td>
+                <td className="count primary">{entry.count.toLocaleString()}</td>
+                <td className="count">{entry.breakdown.shulkerBoxes || "–"}</td>
+                <td className="count">{entry.breakdown.stacks || "–"}</td>
+                <td className="count">{entry.breakdown.singles || "–"}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
 
       <div className="export-row">
         <button

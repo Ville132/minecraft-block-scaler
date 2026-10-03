@@ -10,7 +10,11 @@
  */
 
 import { texturePath, type MinecraftArchive } from "../assets/archiveReader.ts";
-import { resolveSingleVariantCubeModel } from "../assets/modelResolver.ts";
+import {
+  resolveAxisVariantCubeModel,
+  resolveSingleVariantCubeModel,
+  type AxisOrientation,
+} from "../assets/modelResolver.ts";
 import { decodePngTexture, type DecodedTexture } from "../assets/textureDecoder.ts";
 import { CUBE_FACE_DIRECTIONS, type CubeFaceDirection } from "../domain/faces.ts";
 import { buildMaterialList, type MaterialListEntry } from "../domain/materials.ts";
@@ -21,6 +25,8 @@ import { schematicFileName, writeSchematicBytes } from "../litematic/writeSchema
 export interface BuildReplicaParams {
   readonly archive: MinecraftArchive;
   readonly sourceBlockId: string;
+  /** `null` for an ordinary single-variant source block; set for an axis-pillar block (see `assets/modelResolver.ts`'s `hasAxisVariants`), which has no single default appearance to resolve without one. */
+  readonly sourceBlockOrientation: AxisOrientation | null;
   readonly edgeBlocks: number;
   readonly fillStyle: FillStyle;
   /** Candidate replacement blocks — see `domain/palette.ts`. Must include at least one entry. */
@@ -45,11 +51,14 @@ export interface BuildReplicaResult {
  * blocks that passed this exact check once already).
  */
 export async function buildReplica(params: BuildReplicaParams): Promise<BuildReplicaResult> {
-  const { archive, sourceBlockId, edgeBlocks, fillStyle, palette } = params;
+  const { archive, sourceBlockId, sourceBlockOrientation, edgeBlocks, fillStyle, palette } = params;
 
-  const model = resolveSingleVariantCubeModel(archive, sourceBlockId);
+  const model =
+    sourceBlockOrientation === null
+      ? resolveSingleVariantCubeModel(archive, sourceBlockId)
+      : resolveAxisVariantCubeModel(archive, sourceBlockId, sourceBlockOrientation);
   if (model === undefined) {
-    throw new Error(`'${sourceBlockId}' is not a usable source block (not a resolvable single-variant full cube)`);
+    throw new Error(`'${sourceBlockId}' is not a usable source block in the requested orientation`);
   }
 
   const decodedByTextureId = new Map<string, DecodedTexture>();

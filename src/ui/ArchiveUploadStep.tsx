@@ -2,6 +2,9 @@ import { useRef, useState, type DragEvent } from "react";
 import { readMinecraftArchive, type MinecraftArchive } from "../assets/archiveReader.ts";
 import { clearCachedArchive, saveCachedArchive } from "../assets/archiveCache.ts";
 
+/** What to type into the Windows Run dialog (Win+R) to jump straight to the versions/26.3 folder. */
+const WINDOWS_RUN_PATH = String.raw`%appdata%\.minecraft\versions\26.3`;
+
 export interface ArchiveUploadStepProps {
   readonly loadedFileName: string | null;
   /** True when `loadedFileName` was restored from a previous visit rather than just picked — changes the status line's wording. */
@@ -29,7 +32,20 @@ export function ArchiveUploadStep({
 }: ArchiveUploadStepProps) {
   const [error, setError] = useState<string | null>(null);
   const [isDraggingOver, setIsDraggingOver] = useState(false);
+  const [windowsPathCopied, setWindowsPathCopied] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
+
+  async function handleCopyWindowsPath(): Promise<void> {
+    try {
+      await navigator.clipboard.writeText(WINDOWS_RUN_PATH);
+      setWindowsPathCopied(true);
+      setTimeout(() => setWindowsPathCopied(false), 2000);
+    } catch {
+      // Clipboard access can be denied (e.g. no HTTPS, or the user
+      // blocked the permission) — the path is still shown as plain
+      // text right next to the button, so copying by hand still works.
+    }
+  }
 
   function handleDragOver(event: DragEvent<HTMLLabelElement>): void {
     // Required so the browser allows a drop here at all — without
@@ -96,7 +112,11 @@ export function ArchiveUploadStep({
           <strong>Mac:</strong> <code>~/Library/Application Support/minecraft/versions/26.3/</code>
         </li>
         <li>
-          <strong>Windows:</strong> <code>%APPDATA%\.minecraft\versions\26.3\</code>
+          <strong>Windows:</strong> press <kbd>Win</kbd> + <kbd>R</kbd>, paste this, press Enter:{" "}
+          <code>{WINDOWS_RUN_PATH}</code>{" "}
+          <button type="button" className="copy-button" onClick={() => void handleCopyWindowsPath()}>
+            {windowsPathCopied ? "Copied!" : "Copy"}
+          </button>
         </li>
       </ul>
       <p className="hint-text">

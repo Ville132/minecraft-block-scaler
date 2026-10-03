@@ -142,8 +142,16 @@ blocks*, *allow biome-tinted blocks*.
 ### Two explicit scope boundaries for v1
 
 - **Source block must be a single-variant full cube** — cobblestone, stone, deepslate, bricks, planks,
-  wool, concrete, terracotta. Axis-dependent blocks (logs, pillars) are deferred, which also keeps the
-  schematic palette free of `Properties`.
+  wool, concrete, terracotta — **or** the standard axis-pillar shape (logs, wood, basalt, quartz/purpur
+  pillars: blockstate variants keyed exactly `axis=x`/`axis=y`/`axis=z`), picked as the source block in a
+  chosen orientation. ~~Deferred in v1~~ — added in v0.4.0: `assets/modelResolver.ts`'s
+  `resolveAxisVariantCubeModel` resolves either `axis=y` ("upright") or `axis=z` ("sideways"; `axis=x`
+  would be equally valid, since the player can still rotate the finished build in-game), applying the
+  variant's `x`/`y` rotation via `domain/faces.ts`'s `rotateFaceDirection` — Minecraft reuses the *same*
+  model for all three axes and reorients it, rather than defining three different ones, so getting this
+  rotation right (not just picking a different model file) was the actual work. Any other blockstate shape
+  (more than one property, `multipart`, etc.) is still out of scope, which keeps the schematic palette free
+  of `Properties` for every block this app places.
 - **Edge ownership:** a voxel on an edge is visible from two faces and a corner from three. Rule:
   **Y faces win over Z, Z wins over X** — the cap texture owns the rim. Deterministic and one voxel wide.
   Noted as the natural place to add an option if anisotropic blocks land later.

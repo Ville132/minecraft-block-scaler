@@ -1,7 +1,14 @@
 import { useEffect, useRef, useState } from "react";
 import { clearCachedArchive, loadCachedArchive } from "../assets/archiveCache.ts";
 import { readMinecraftArchive, type MinecraftArchive } from "../assets/archiveReader.ts";
-import { buildPalette, DEFAULT_PALETTE_OPTIONS, type PaletteBlock, type PaletteOptions } from "../domain/palette.ts";
+import type { AxisOrientation } from "../assets/modelResolver.ts";
+import {
+  buildPalette,
+  DEFAULT_PALETTE_OPTIONS,
+  listAxisVariantBlocks,
+  type PaletteBlock,
+  type PaletteOptions,
+} from "../domain/palette.ts";
 import type { FillStyle } from "../domain/shell.ts";
 import { ArchiveUploadStep } from "./ArchiveUploadStep.tsx";
 import { BlockPickerStep } from "./BlockPickerStep.tsx";
@@ -16,9 +23,12 @@ export function App() {
 
   const [paletteOptions, setPaletteOptions] = useState<PaletteOptions>(DEFAULT_PALETTE_OPTIONS);
   const [palette, setPalette] = useState<readonly PaletteBlock[]>([]);
+  const [axisVariantBlocks, setAxisVariantBlocks] = useState<readonly PaletteBlock[]>([]);
   const [isLoadingPalette, setIsLoadingPalette] = useState(false);
 
   const [sourceBlockId, setSourceBlockId] = useState<string | null>(null);
+  /** Non-null only while `sourceBlockId` names a block from `axisVariantBlocks` — see `hasAxisVariants` in `assets/modelResolver.ts`. */
+  const [sourceBlockOrientation, setSourceBlockOrientation] = useState<AxisOrientation | null>(null);
   const [edgeBlocks, setEdgeBlocks] = useState<number | null>(null);
   const [fillStyle, setFillStyle] = useState<FillStyle>("hollow");
 
@@ -26,23 +36,30 @@ export function App() {
   const [buildError, setBuildError] = useState<string | null>(null);
   const [result, setResult] = useState<BuildReplicaResult | null>(null);
 
-  // Re-derives the palette whenever the archive or its options change.
-  // A stale request guard discards a slower, superseded run rather than
-  // letting it clobber a newer one that resolved first.
+  // Re-derives both the fill palette and the axis-pillar candidate list
+  // whenever the archive or its options change. A stale request guard
+  // discards a slower, superseded run rather than letting it clobber a
+  // newer one that resolved first.
   const paletteRequestId = useRef(0);
   useEffect(() => {
     if (archive === null) {
       setPalette([]);
+      setAxisVariantBlocks([]);
       return;
     }
     const requestId = ++paletteRequestId.current;
     setIsLoadingPalette(true);
-    buildPalette(archive, paletteOptions)
-      .then((builtPalette) => {
+    Promise.all([buildPalette(archive, paletteOptions), listAxisVariantBlocks(archive, paletteOptions)])
+      .then(([builtPalette, builtAxisVariantBlocks]) => {
         if (paletteRequestId.current !== requestId) return;
         setPalette(builtPalette);
-        if (sourceBlockId !== null && !builtPalette.some((block) => block.blockId === sourceBlockId)) {
+        setAxisVariantBlocks(builtAxisVariantBlocks);
+        const stillSelectable =
+          builtPalette.some((block) => block.blockId === sourceBlockId) ||
+          builtAxisVariantBlocks.some((block) => block.blockId === sourceBlockId);
+        if (sourceBlockId !== null && !stillSelectable) {
           setSourceBlockId(null);
+          setSourceBlockOrientation(null);
         }
       })
       .finally(() => {
@@ -86,7 +103,14 @@ export function App() {
     setIsBuilding(true);
     setBuildError(null);
     try {
-      const built = await buildReplica({ archive, sourceBlockId, edgeBlocks, fillStyle, palette });
+      const built = await buildReplica({
+        archive,
+        sourceBlockId,
+        sourceBlockOrientation,
+        edgeBlocks,
+        fillStyle,
+        palette,
+      });
       setResult(built);
     } catch (cause) {
       setBuildError(cause instanceof Error ? cause.message : String(cause));
@@ -112,6 +136,7 @@ export function App() {
           setLoadedFileName(fileName);
           setLoadedFromCache(false);
           setSourceBlockId(null);
+          setSourceBlockOrientation(null);
           setResult(null);
         }}
         onArchiveCleared={() => {
@@ -119,6 +144,7 @@ export function App() {
           setLoadedFileName(null);
           setLoadedFromCache(false);
           setSourceBlockId(null);
+          setSourceBlockOrientation(null);
           setResult(null);
         }}
       />
@@ -127,11 +153,19 @@ export function App() {
         isReady={archive !== null}
         isLoadingPalette={isLoadingPalette}
         palette={palette}
+        axisVariantBlocks={axisVariantBlocks}
         options={paletteOptions}
         onOptionsChange={setPaletteOptions}
         selectedBlockId={sourceBlockId}
         onSelectBlock={(blockId) => {
           setSourceBlockId(blockId);
+          const isAxisVariant = axisVariantBlocks.some((block) => block.blockId === blockId);
+          setSourceBlockOrientation(isAxisVariant ? "upright" : null);
+          setResult(null);
+        }}
+        sourceBlockOrientation={sourceBlockOrientation}
+        onOrientationChange={(orientation) => {
+          setSourceBlockOrientation(orientation);
           setResult(null);
         }}
       />
