@@ -205,9 +205,7 @@ dimensions match, no block shows as unknown, and the overlay reads as the source
 - Mojang's asset CDN was DNS-blocked from this sandbox (confirmed across Bash, the browser pane, and
   WebFetch — all three failed to resolve `*.mojang.com`), so optional auto-download of official assets
   stays out of scope; user-supplied archives are the only texture path.
-- **Not implemented: IndexedDB caching of the parsed archive**, despite step 5 above calling for it. The
-  app re-reads and re-parses the uploaded jar/resource pack on every page load; nothing persists it across
-  sessions. This was a scope miss during implementation, not a deliberate cut — unlike the 3D preview,
-  which step 10 explicitly pre-authorized dropping. Nothing about the current design blocks adding it later
-  (the natural spot is around `ArchiveUploadStep`/`App.tsx`'s archive state), it just isn't there yet.
-- Deployed: `https://minecraft-block-scaler-production.up.railway.app`.
+- ~~Not implemented: IndexedDB caching~~ — added in v0.2.0 (`src/assets/archiveCache.ts`): a successful
+  upload is cached and restored automatically on the next visit, with a "Use a different file" control to
+  replace it.
+- Deployed: `https://minecraft-block-scaler.up.railway.app`.

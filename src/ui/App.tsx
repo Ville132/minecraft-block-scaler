@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
-import type { MinecraftArchive } from "../assets/archiveReader.ts";
+import { clearCachedArchive, loadCachedArchive } from "../assets/archiveCache.ts";
+import { readMinecraftArchive, type MinecraftArchive } from "../assets/archiveReader.ts";
 import { buildPalette, DEFAULT_PALETTE_OPTIONS, type PaletteBlock, type PaletteOptions } from "../domain/palette.ts";
 import type { FillStyle } from "../domain/shell.ts";
 import { ArchiveUploadStep } from "./ArchiveUploadStep.tsx";
@@ -11,6 +12,7 @@ import { ScaleAndOptionsStep } from "./ScaleAndOptionsStep.tsx";
 export function App() {
   const [archive, setArchive] = useState<MinecraftArchive | null>(null);
   const [loadedFileName, setLoadedFileName] = useState<string | null>(null);
+  const [loadedFromCache, setLoadedFromCache] = useState(false);
 
   const [paletteOptions, setPaletteOptions] = useState<PaletteOptions>(DEFAULT_PALETTE_OPTIONS);
   const [palette, setPalette] = useState<readonly PaletteBlock[]>([]);
@@ -50,6 +52,35 @@ export function App() {
     // the new palette drops it should not itself trigger another rebuild.
   }, [archive, paletteOptions]);
 
+  // Restores a previously uploaded archive on mount, so a returning
+  // visitor does not need to upload the same jar/resource pack again
+  // (see ArchiveUploadStep.tsx and archiveCache.ts). Runs once; if
+  // nothing was cached, or the cached bytes no longer parse (e.g. an
+  // interrupted save), this just leaves the upload step empty rather
+  // than surfacing an error for something the user didn't just do.
+  useEffect(() => {
+    let cancelled = false;
+    loadCachedArchive()
+      .then((cached) => {
+        if (cancelled || cached === undefined) return;
+        try {
+          const restoredArchive = readMinecraftArchive(cached.bytes);
+          setArchive(restoredArchive);
+          setLoadedFileName(cached.fileName);
+          setLoadedFromCache(true);
+        } catch {
+          void clearCachedArchive();
+        }
+      })
+      .catch(() => {
+        // IndexedDB can be unavailable (e.g. private browsing) — that
+        // just means no restore happens, same as a first-ever visit.
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
   async function handleBuild(): Promise<void> {
     if (archive === null || sourceBlockId === null || edgeBlocks === null || palette.length === 0) return;
     setIsBuilding(true);
@@ -75,9 +106,18 @@ export function App() {
 
       <ArchiveUploadStep
         loadedFileName={loadedFileName}
+        loadedFromCache={loadedFromCache}
         onArchiveLoaded={(loadedArchive, fileName) => {
           setArchive(loadedArchive);
           setLoadedFileName(fileName);
+          setLoadedFromCache(false);
+          setSourceBlockId(null);
+          setResult(null);
+        }}
+        onArchiveCleared={() => {
+          setArchive(null);
+          setLoadedFileName(null);
+          setLoadedFromCache(false);
           setSourceBlockId(null);
           setResult(null);
         }}
