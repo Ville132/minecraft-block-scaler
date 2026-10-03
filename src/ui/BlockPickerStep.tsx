@@ -7,7 +7,7 @@ export interface BlockPickerStepProps {
   readonly isReady: boolean;
   readonly isLoadingPalette: boolean;
   readonly palette: readonly PaletteBlock[];
-  /** Axis-pillar blocks (logs, wood, basalt, quartz/purpur pillars, …) offered only as scale sources, not as fill material — see `domain/palette.ts`'s `listAxisVariantBlocks`. */
+  /** Axis-pillar blocks (logs, wood, basalt, quartz/purpur pillars, …), shown here so one of them can be picked as the scale source with an orientation choice — App.tsx also folds this list into fill material (see `domain/palette.ts`'s `listAxisVariantBlocks`), so excluding one from this picker would silently remove it from fill color-matching too. */
   readonly axisVariantBlocks: readonly PaletteBlock[];
   readonly options: PaletteOptions;
   readonly onOptionsChange: (options: PaletteOptions) => void;
@@ -22,12 +22,13 @@ export interface BlockPickerStepProps {
 }
 
 /**
- * The fill palette serves two roles: which block to scale up, and
- * which blocks are allowed as replacement material for the rest (see
- * `ui/buildReplica.ts`'s header comment for why one list is enough) —
- * axis-pillar blocks are shown alongside it here but stay a separate
- * list under the hood, since they need an orientation choice fill
- * material never does.
+ * Shows every block eligible either as the scale source or as fill
+ * material — `palette` and `axisVariantBlocks` together, the latter
+ * kept as a distinct prop only because picking one of THEM as the
+ * source needs an orientation choice (below) that a `palette` entry
+ * has no concept of. Both lists are also what App.tsx merges for fill
+ * material (see `domain/palette.ts`'s `listAxisVariantBlocks`), so
+ * this picker is a complete, accurate view of what the build can use.
  */
 export function BlockPickerStep({
   isReady,

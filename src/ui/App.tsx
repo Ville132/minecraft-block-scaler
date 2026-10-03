@@ -29,9 +29,21 @@ export function App() {
   /** Restricts FILL material to wood blocks only — unlike `paletteOptions`, this never hides a block from the "choose a block to scale" picker, only from what can be used to color it in. */
   const [onlyWoodFillMaterial, setOnlyWoodFillMaterial] = useState(false);
 
+  // Axis-pillar blocks (stripped logs, plain "wood"/all-bark variants,
+  // nether stems/hyphae, …) are just as usable as fill material as any
+  // other block — their precomputed "upright" color is exactly right
+  // for that, since a schematic entry with no Properties defaults to
+  // axis=y (see listAxisVariantBlocks's doc comment in palette.ts).
+  // They're kept in a separate list from palette.ts's buildPalette only
+  // because the picker needs an orientation choice for them when one is
+  // chosen as the scale SOURCE, which fill material has no use for.
+  const allFillCandidates = useMemo(() => [...palette, ...axisVariantBlocks], [palette, axisVariantBlocks]);
   const fillPalette = useMemo(
-    () => (onlyWoodFillMaterial ? palette.filter((block) => isWoodFamilyBlock(block.blockId)) : palette),
-    [palette, onlyWoodFillMaterial],
+    () =>
+      onlyWoodFillMaterial
+        ? allFillCandidates.filter((block) => isWoodFamilyBlock(block.blockId))
+        : allFillCandidates,
+    [allFillCandidates, onlyWoodFillMaterial],
   );
 
   const [sourceBlockId, setSourceBlockId] = useState<string | null>(null);

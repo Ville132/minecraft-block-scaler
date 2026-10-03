@@ -293,15 +293,21 @@ export async function buildPalette(
 
 /**
  * Lists axis-pillar blocks (logs, wood, basalt, quartz/purpur pillars,
- * etc. — see `assets/modelResolver.ts`'s `hasAxisVariants`) the user
- * can pick as a scale *source*, each resolved in its `"upright"`
- * orientation for the picker's color swatch. A separate list from
- * {@link buildPalette} rather than merged into it: fill material never
- * needs an orientation choice, so keeping that palette exactly as
- * single-variant-only avoids giving every other part of the app a
- * concept it has no use for. The same exclusion rules still apply —
- * an axis-pillar block makes no exception for being precious,
- * gravity-affected, or biome-tinted.
+ * etc. — see `assets/modelResolver.ts`'s `hasAxisVariants`), each
+ * resolved in its `"upright"` orientation (`axis=y`).
+ *
+ * A separate list from {@link buildPalette}, not because these blocks
+ * are unfit as fill material — the UI merges this list into
+ * `buildPalette`'s before passing either to `buildVoxelGrid`, and the
+ * `"upright"` color computed here is exactly right for that: a
+ * schematic entry with no `Properties` defaults to `axis=y`, so the
+ * color this function resolves is what actually gets placed. The
+ * separation exists because only THIS list needs an orientation choice
+ * exposed in the picker (for when one of these is picked as the scale
+ * *source*, not as fill) — `buildPalette`'s candidates have no
+ * orientation concept to begin with. The same exclusion rules apply
+ * either way — an axis-pillar block makes no exception for being
+ * precious, gravity-affected, or biome-tinted.
  */
 export async function listAxisVariantBlocks(
   archive: MinecraftArchive,
