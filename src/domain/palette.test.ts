@@ -129,6 +129,16 @@ function testArchive(): MinecraftArchive {
       "assets/minecraft/textures/block/flickering_thing.png.mcmeta": "{}",
     }),
     ...cubeAllBlockFiles("glassy_thing", "TRANSPARENT"),
+    // A real recipe: jukebox isn't named after diamond, so only
+    // reading its recipe (not its id) can tell this is expensive.
+    ...cubeAllBlockFiles("jukebox", "GRAY", {
+      "data/minecraft/recipe/jukebox.json": {
+        type: "minecraft:crafting_shaped",
+        pattern: ["XXX", "XDX", "XXX"],
+        key: { X: { item: "minecraft:oak_planks" }, D: { item: "minecraft:diamond" } },
+        result: { item: "minecraft:jukebox" },
+      },
+    }),
     "assets/minecraft/blockstates/oak_log.json": {
       variants: {
         "axis=x": { model: "minecraft:block/oak_log_horizontal" },
@@ -180,6 +190,20 @@ describe("buildPalette", () => {
     );
     const goldBlock = palette.find((block) => block.blockId === "gold_block");
     expect(goldBlock?.costTier).toBe("precious");
+  });
+
+  it("excludes a block crafted from a scarce ingredient by default, even though its own name doesn't say so (jukebox, from a diamond)", async () => {
+    const palette = await buildPalette(testArchive(), undefined, fakeDecodeTexture);
+    expect(palette.map((block) => block.blockId)).not.toContain("jukebox");
+  });
+
+  it("re-includes that block when survivalFriendlyOnly is relaxed", async () => {
+    const palette = await buildPalette(
+      testArchive(),
+      { survivalFriendlyOnly: false, allowGravityBlocks: false, allowBiomeTintedBlocks: false },
+      fakeDecodeTexture,
+    );
+    expect(palette.map((block) => block.blockId)).toContain("jukebox");
   });
 
   it("re-includes a gravity block when allowGravityBlocks is set", async () => {

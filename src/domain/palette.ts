@@ -13,6 +13,7 @@ import {
   resolveSingleVariantCubeModel,
   type ResolvedCubeModel,
 } from "../assets/modelResolver.ts";
+import { requiresScarceIngredient } from "../assets/recipes.ts";
 import { decodePngTexture, type DecodedTexture } from "../assets/textureDecoder.ts";
 import { averageLinearRgb, linearRgbToOklab, rgb8ToLinearRgb, type LinearRgb, type Oklab } from "./color.ts";
 
@@ -140,12 +141,23 @@ export function costTierOf(blockId: string): CostTier {
   return PRECIOUS_MATERIAL_BLOCK_IDS.has(blockId) ? "precious" : "common";
 }
 
-/** The exclusion-category checks shared by {@link buildPalette} and {@link listAxisVariantBlocks} — unbuildable is absolute, the rest are gated by `options`. */
-function passesExclusionFilters(blockId: string, options: PaletteOptions): boolean {
+/**
+ * The exclusion-category checks shared by {@link buildPalette} and
+ * {@link listAxisVariantBlocks} — unbuildable is absolute, the rest
+ * are gated by `options`.
+ *
+ * Two independent checks gate on `survivalFriendlyOnly`: `costTierOf`
+ * catches a block that IS a precious material (`gold_block`), and
+ * `requiresScarceIngredient` catches one that is merely CRAFTED FROM
+ * one despite not being named after it (`jukebox`, from a diamond) —
+ * a block's own id can't tell you that, only its recipe can.
+ */
+function passesExclusionFilters(archive: MinecraftArchive, blockId: string, options: PaletteOptions): boolean {
   if (isUnbuildableBlock(blockId)) return false;
   if (!options.allowGravityBlocks && isGravityBlock(blockId)) return false;
   if (!options.allowBiomeTintedBlocks && isBiomeTintedBlock(blockId)) return false;
   if (options.survivalFriendlyOnly && costTierOf(blockId) === "precious") return false;
+  if (options.survivalFriendlyOnly && requiresScarceIngredient(archive, blockId)) return false;
   return true;
 }
 
@@ -239,7 +251,7 @@ export async function buildPalette(
   const paletteBlocks: PaletteBlock[] = [];
 
   for (const blockId of listBlockIds(archive)) {
-    if (!passesExclusionFilters(blockId, options)) continue;
+    if (!passesExclusionFilters(archive, blockId, options)) continue;
 
     const model = resolveSingleVariantCubeModel(archive, blockId);
     if (model === undefined) continue;
@@ -273,7 +285,7 @@ export async function listAxisVariantBlocks(
   const blocks: PaletteBlock[] = [];
 
   for (const blockId of listBlockIds(archive)) {
-    if (!passesExclusionFilters(blockId, options)) continue;
+    if (!passesExclusionFilters(archive, blockId, options)) continue;
     if (!hasAxisVariants(archive, blockId)) continue;
 
     const model = resolveAxisVariantCubeModel(archive, blockId, "upright");
