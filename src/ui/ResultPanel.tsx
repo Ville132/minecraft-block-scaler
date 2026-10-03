@@ -58,7 +58,7 @@ export function ResultPanel({ result, edgeBlocks }: ResultPanelProps) {
             downloadText(materialListToText(result.materialList), "material-list.txt", "text/plain")
           }
         >
-          Download material list (.txt)
+          ↓ Material list (.txt)
         </button>
         <button
           type="button"
@@ -66,18 +66,18 @@ export function ResultPanel({ result, edgeBlocks }: ResultPanelProps) {
             downloadText(materialListToCsv(result.materialList), "material-list.csv", "text/csv")
           }
         >
-          Download material list (.csv)
+          ↓ Material list (.csv)
         </button>
         <button
           type="button"
           className="primary"
           onClick={() => downloadBytes(result.schematicBytes, result.fileName)}
         >
-          Download {result.fileName}
+          ↓ {result.fileName}
         </button>
       </div>
 
-      <h2 style={{ marginTop: 22 }}>Preview</h2>
+      <h2 className="preview-heading">Preview</h2>
       <div className="face-tabs">
         {CUBE_FACE_DIRECTIONS.map((direction) => (
           <button

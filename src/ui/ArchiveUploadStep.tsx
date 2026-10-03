@@ -131,6 +131,17 @@ export function ArchiveUploadStep({
           onDragLeave={() => setIsDraggingOver(false)}
           onDrop={handleDrop}
         >
+          <svg
+            className="drop-zone-icon"
+            width="30"
+            height="26"
+            viewBox="0 0 30 26"
+            aria-hidden="true"
+            focusable="false"
+          >
+            <path d="M15 2 L15 17 M8 9 L15 2 L22 9" fill="none" strokeLinecap="round" strokeLinejoin="round" />
+            <path d="M2 18 L2 22 Q2 24 4 24 L26 24 Q28 24 28 22 L28 18" fill="none" strokeLinecap="round" />
+          </svg>
           <span>
             <strong>Drag your jar or zip here</strong>, or click to browse
           </span>

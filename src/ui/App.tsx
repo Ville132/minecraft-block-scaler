@@ -143,7 +143,21 @@ export function App() {
 
   return (
     <main>
-      <h1>Minecraft Block Scaler</h1>
+      <div className="app-header">
+        <svg
+          className="logo-cube"
+          width="34"
+          height="34"
+          viewBox="0 0 100 100"
+          aria-hidden="true"
+          focusable="false"
+        >
+          <polygon points="50,6 90,27 50,48 10,27" fill="#a3df7c" />
+          <polygon points="10,27 50,48 50,94 10,73" fill="#6a9e4c" />
+          <polygon points="90,27 50,48 50,94 90,73" fill="#487338" />
+        </svg>
+        <h1>Minecraft Block Scaler</h1>
+      </div>
       <p className="subtitle">
         Turn one block into a giant, scale-true replica — with the exact material list to build it.
       </p>
