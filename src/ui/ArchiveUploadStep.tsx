@@ -1,4 +1,4 @@
-import { useRef, useState } from "react";
+import { useRef, useState, type DragEvent } from "react";
 import { readMinecraftArchive, type MinecraftArchive } from "../assets/archiveReader.ts";
 import { clearCachedArchive, saveCachedArchive } from "../assets/archiveCache.ts";
 
@@ -28,7 +28,22 @@ export function ArchiveUploadStep({
   onArchiveCleared,
 }: ArchiveUploadStepProps) {
   const [error, setError] = useState<string | null>(null);
+  const [isDraggingOver, setIsDraggingOver] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
+
+  function handleDragOver(event: DragEvent<HTMLLabelElement>): void {
+    // Required so the browser allows a drop here at all — without
+    // preventDefault, "dragover" cancels the drop and nothing happens.
+    event.preventDefault();
+    setIsDraggingOver(true);
+  }
+
+  function handleDrop(event: DragEvent<HTMLLabelElement>): void {
+    event.preventDefault();
+    setIsDraggingOver(false);
+    const file = event.dataTransfer.files[0];
+    if (file !== undefined) void handleFileChosen(file);
+  }
 
   async function handleFileChosen(file: File): Promise<void> {
     setError(null);
@@ -89,15 +104,27 @@ export function ArchiveUploadStep({
         next time so you only need to do this once.
       </p>
       {loadedFileName === null ? (
-        <input
-          ref={inputRef}
-          type="file"
-          accept=".jar,.zip"
-          onChange={(event) => {
-            const file = event.target.files?.[0];
-            if (file !== undefined) void handleFileChosen(file);
-          }}
-        />
+        <label
+          className="drop-zone"
+          data-dragging-over={isDraggingOver}
+          onDragOver={handleDragOver}
+          onDragLeave={() => setIsDraggingOver(false)}
+          onDrop={handleDrop}
+        >
+          <span>
+            <strong>Drag your jar or zip here</strong>, or click to browse
+          </span>
+          <input
+            ref={inputRef}
+            type="file"
+            accept=".jar,.zip"
+            className="visually-hidden"
+            onChange={(event) => {
+              const file = event.target.files?.[0];
+              if (file !== undefined) void handleFileChosen(file);
+            }}
+          />
+        </label>
       ) : (
         <p className="hint-text">
           {loadedFromCache ? "Remembered from last time: " : "Loaded "}

@@ -142,6 +142,48 @@ label.checkbox {
   user-select: none;
 }
 
+.drop-zone {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+  padding: 28px 16px;
+  border: 2px dashed var(--border);
+  border-radius: 4px;
+  color: var(--text-dim);
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.drop-zone:hover {
+  border-color: var(--accent-dim);
+}
+
+.drop-zone[data-dragging-over="true"] {
+  border-color: var(--accent);
+  background: rgba(124, 184, 87, 0.08);
+  color: var(--text);
+}
+
+.drop-zone strong {
+  color: var(--text);
+}
+
+/* Keeps the native file input focusable and in the tab order (unlike
+   display:none) while making the surrounding <label> the visible,
+   clickable and droppable surface. */
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
 .error-text {
   color: var(--danger);
   font-size: 13px;
