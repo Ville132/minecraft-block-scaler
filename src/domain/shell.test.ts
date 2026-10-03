@@ -99,12 +99,16 @@ describe("pixelRegionForVoxelCoord", () => {
 
 describe("positionOnFace", () => {
   it("places (u, v) on the correct boundary plane for each direction", () => {
+    // v is always y (true vertical) on the four side faces — east/west
+    // use u=z (the "around" axis), not u=y, so that a texture's up
+    // direction renders consistently on every side (see faceScreenAxes's
+    // doc comment for the real-world bug this fixes).
     expect(positionOnFace("down", 5, 7, 16)).toEqual({ x: 5, y: 0, z: 7 });
     expect(positionOnFace("up", 5, 7, 16)).toEqual({ x: 5, y: 15, z: 7 });
     expect(positionOnFace("north", 5, 7, 16)).toEqual({ x: 5, y: 7, z: 0 });
     expect(positionOnFace("south", 5, 7, 16)).toEqual({ x: 5, y: 7, z: 15 });
-    expect(positionOnFace("west", 5, 7, 16)).toEqual({ x: 0, y: 5, z: 7 });
-    expect(positionOnFace("east", 5, 7, 16)).toEqual({ x: 15, y: 5, z: 7 });
+    expect(positionOnFace("west", 5, 7, 16)).toEqual({ x: 0, y: 7, z: 5 });
+    expect(positionOnFace("east", 5, 7, 16)).toEqual({ x: 15, y: 7, z: 5 });
   });
 
   it("is always on the shell, for any (u, v)", () => {
@@ -130,6 +134,26 @@ function solidTexture(size: number, rgb: readonly [number, number, number]): Dec
     pixels[i + 1] = rgb[1];
     pixels[i + 2] = rgb[2];
     pixels[i + 3] = 255;
+  }
+  return { width: size, height: size, pixels };
+}
+
+/** Top half `topRgb`, bottom half `bottomRgb` — unlike every uniform texture above, this has real vertical structure, so sampling it along the wrong axis actually changes the result. That's what makes it able to catch a face-orientation bug a solid color cannot. */
+function verticallyStripedTexture(
+  size: number,
+  topRgb: readonly [number, number, number],
+  bottomRgb: readonly [number, number, number],
+): DecodedTexture {
+  const pixels = new Uint8ClampedArray(size * size * 4);
+  for (let row = 0; row < size; row++) {
+    const rgb = row < size / 2 ? topRgb : bottomRgb;
+    for (let col = 0; col < size; col++) {
+      const pixelIndex = (row * size + col) * 4;
+      pixels[pixelIndex] = rgb[0];
+      pixels[pixelIndex + 1] = rgb[1];
+      pixels[pixelIndex + 2] = rgb[2];
+      pixels[pixelIndex + 3] = 255;
+    }
   }
   return { width: size, height: size, pixels };
 }
@@ -194,6 +218,35 @@ describe("buildVoxelGrid", () => {
     const sideVoxel = voxels.find((v) => v.x === 15 && v.y === 8 && v.z === 8);
     expect(topVoxel?.paletteBlock.blockId).toBe("green_wool");
     expect(sideVoxel?.paletteBlock.blockId).toBe("red_wool");
+  });
+
+  it("keeps a texture's vertical structure consistent on every side face (regression: east/west used to sample along z instead of y, rotating the texture 90° on those two faces — invisible with a uniform color, which is every fixture above this one)", () => {
+    const sourceFaceTextures = uniformFaceTextures(RED);
+    const topHalfGreenBottomHalfRed = verticallyStripedTexture(16, GREEN, RED);
+    for (const direction of ["north", "south", "east", "west"] as const) {
+      sourceFaceTextures[direction] = topHalfGreenBottomHalfRed;
+    }
+
+    const voxels = buildVoxelGrid({ edgeBlocks: 16, fillStyle: "hollow", sourceFaceTextures, palette: PALETTE });
+    const voxelAt = new Map(voxels.map((voxel) => [`${voxel.x},${voxel.y},${voxel.z}`, voxel]));
+
+    // Low y (texture's top half) -> green; high y (bottom half) -> red —
+    // on all four side faces alike, including east/west, which is
+    // exactly what the bug broke (it would have read red_wool at
+    // (15,2,8) and green_wool at (15,13,8): the opposite of these).
+    for (const [x, y, z, expectedBlockId] of [
+      [8, 2, 0, "green_wool"],
+      [8, 13, 0, "red_wool"],
+      [8, 2, 15, "green_wool"],
+      [8, 13, 15, "red_wool"],
+      [15, 2, 8, "green_wool"],
+      [15, 13, 8, "red_wool"],
+      [0, 2, 8, "green_wool"],
+      [0, 13, 8, "red_wool"],
+    ] as const) {
+      const voxel = voxelAt.get(`${x},${y},${z}`);
+      expect(voxel?.paletteBlock.blockId, `at (${x},${y},${z})`).toBe(expectedBlockId);
+    }
   });
 
   it("rejects an empty palette", () => {

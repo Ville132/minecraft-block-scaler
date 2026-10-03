@@ -94,12 +94,34 @@ export function governingFace(x: number, y: number, z: number, edgeBlocks: numbe
   return faceForOrientation(bestAxis, best.sign);
 }
 
-/** The two axes other than `axis`, in a fixed x-y-z order — the shared convention both {@link faceLocalCoordinates} and {@link positionOnFace} use for "u" and "v". */
-function nonGoverningAxesInOrder(axis: Axis): readonly [Axis, Axis] {
-  return (["x", "y", "z"] as const).filter((candidate) => candidate !== axis) as [Axis, Axis];
+/**
+ * The screen-space (u, v) axes for a face, chosen so "up" in texture
+ * space is always the block's real vertical (Y) axis on the four SIDE
+ * faces — the semantically correct choice for any texture with a top
+ * and bottom, like bark. The two CAP faces (up/down) have no natural
+ * vertical of their own, so they keep a fixed, arbitrary-but-consistent
+ * (x, z) convention.
+ *
+ * This replaced a generic "the two non-governing axes in x-y-z order"
+ * rule that put z (depth) on the vertical axis of the east/west faces
+ * instead of y — a real bug, reported against a real resource pack's
+ * mangrove_log: it rendered the bark pattern rotated 90° on east/west
+ * relative to north/south. Every test up to that point used a flat,
+ * single-color texture, which can never reveal a rotation bug, since
+ * rotating a solid color changes nothing.
+ */
+function faceScreenAxes(governingAxis: Axis): readonly [Axis, Axis] {
+  switch (governingAxis) {
+    case "x":
+      return ["z", "y"]; // east/west: horizontal = around (z), vertical = true up (y)
+    case "z":
+      return ["x", "y"]; // north/south: horizontal = around (x), vertical = true up (y)
+    case "y":
+      return ["x", "z"]; // up/down: no natural vertical; fixed (x, z) convention
+  }
 }
 
-/** The voxel's position along the face's two non-governing axes, in a fixed x-y-z order — the position this voxel occupies within its governing face. */
+/** The voxel's position along the face's screen-space (u, v) axes — see {@link faceScreenAxes}. */
 function faceLocalCoordinates(
   direction: CubeFaceDirection,
   x: number,
@@ -108,7 +130,7 @@ function faceLocalCoordinates(
 ): { readonly uCoord: number; readonly vCoord: number } {
   const { axis: governingAxis } = faceOrientation(direction);
   const coordByAxis: Readonly<Record<Axis, number>> = { x, y, z };
-  const [uAxis, vAxis] = nonGoverningAxesInOrder(governingAxis);
+  const [uAxis, vAxis] = faceScreenAxes(governingAxis);
   return { uCoord: coordByAxis[uAxis], vCoord: coordByAxis[vAxis] };
 }
 
@@ -128,7 +150,7 @@ export function positionOnFace(
   edgeBlocks: number,
 ): { readonly x: number; readonly y: number; readonly z: number } {
   const { axis: governingAxis, sign } = faceOrientation(direction);
-  const [uAxis, vAxis] = nonGoverningAxesInOrder(governingAxis);
+  const [uAxis, vAxis] = faceScreenAxes(governingAxis);
   const coordByAxis: Record<Axis, number> = { x: 0, y: 0, z: 0 };
   coordByAxis[governingAxis] = sign === -1 ? 0 : edgeBlocks - 1;
   coordByAxis[uAxis] = uCoord;
