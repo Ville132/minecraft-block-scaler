@@ -9,6 +9,7 @@ import {
   isBiomeTintedBlock,
   isGravityBlock,
   isUnbuildableBlock,
+  isWoodFamilyBlock,
   listAxisVariantBlocks,
   type TextureDecoder,
 } from "./palette.ts";
@@ -36,6 +37,33 @@ describe("classification rules", () => {
     expect(isUnbuildableBlock("barrier")).toBe(true);
     expect(isUnbuildableBlock("infested_stone")).toBe(true);
     expect(isUnbuildableBlock("cobblestone")).toBe(false);
+  });
+
+  it("flags wood-family blocks across logs, wood, planks, stems, hyphae, and stripped variants", () => {
+    expect(isWoodFamilyBlock("oak_log")).toBe(true);
+    expect(isWoodFamilyBlock("mangrove_log")).toBe(true);
+    expect(isWoodFamilyBlock("dark_oak_planks")).toBe(true); // multi-word species name
+    expect(isWoodFamilyBlock("stripped_mangrove_log")).toBe(true);
+    expect(isWoodFamilyBlock("stripped_dark_oak_wood")).toBe(true);
+    expect(isWoodFamilyBlock("crimson_stem")).toBe(true);
+    expect(isWoodFamilyBlock("stripped_warped_hyphae")).toBe(true);
+    expect(isWoodFamilyBlock("bamboo_planks")).toBe(true);
+    expect(isWoodFamilyBlock("bamboo_mosaic")).toBe(true);
+  });
+
+  it("flags a wood species this app has no hardcoded knowledge of (proves the pattern match, not a species list, is what's doing the work)", () => {
+    expect(isWoodFamilyBlock("poplar_log")).toBe(true);
+    expect(isWoodFamilyBlock("poplar_planks")).toBe(true);
+    expect(isWoodFamilyBlock("stripped_poplar_wood")).toBe(true);
+  });
+
+  it("does not flag non-wood blocks, including ones with a deceptively similar suffix", () => {
+    expect(isWoodFamilyBlock("cobblestone")).toBe(false);
+    expect(isWoodFamilyBlock("stone")).toBe(false);
+    expect(isWoodFamilyBlock("end_stone")).toBe(false);
+    expect(isWoodFamilyBlock("redstone_block")).toBe(false);
+    expect(isWoodFamilyBlock("note_block")).toBe(false);
+    expect(isWoodFamilyBlock("bookshelf")).toBe(false);
   });
 });
 

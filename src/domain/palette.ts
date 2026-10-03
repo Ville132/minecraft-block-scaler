@@ -141,6 +141,32 @@ export function costTierOf(blockId: string): CostTier {
   return PRECIOUS_MATERIAL_BLOCK_IDS.has(blockId) ? "precious" : "common";
 }
 
+/** Wood blocks that don't follow the `*_log`/`*_wood`/`*_planks`/`*_stem`/`*_hyphae` naming pattern {@link isWoodFamilyBlock} otherwise matches. */
+const EXTRA_WOOD_FAMILY_BLOCK_IDS: ReadonlySet<string> = new Set([
+  "bamboo_block",
+  "stripped_bamboo_block",
+  "bamboo_planks",
+  "bamboo_mosaic",
+]);
+
+/**
+ * Whether a block belongs to some wood species' family: logs, "wood"
+ * (the all-bark variant), planks, nether stems/hyphae, any `stripped_`
+ * version of those, plus the handful of bamboo blocks that don't fit
+ * that naming pattern.
+ *
+ * Deliberately pattern-based rather than a hardcoded species list —
+ * "oak, spruce, birch, mangrove, ..." written from general knowledge
+ * would silently miss any species this app doesn't already know the
+ * name of, and Java 26.3 itself added one (poplar) that such a list
+ * wouldn't include. Matching the suffix every wood-family block
+ * actually uses means a new species just works, with nothing to update.
+ */
+export function isWoodFamilyBlock(blockId: string): boolean {
+  if (EXTRA_WOOD_FAMILY_BLOCK_IDS.has(blockId)) return true;
+  return /^(stripped_)?[a-z]+(_[a-z]+)*_(log|wood|planks|stem|hyphae)$/.test(blockId);
+}
+
 /**
  * The exclusion-category checks shared by {@link buildPalette} and
  * {@link listAxisVariantBlocks} — unbuildable is absolute, the rest

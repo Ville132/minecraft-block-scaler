@@ -16,6 +16,9 @@ export interface BlockPickerStepProps {
   /** Non-null only while the selected block is from `axisVariantBlocks`. */
   readonly sourceBlockOrientation: AxisOrientation | null;
   readonly onOrientationChange: (orientation: AxisOrientation) => void;
+  /** Restricts fill material to wood blocks only — unlike `options`, never hides a block from this picker, only from what can be used to color the build. */
+  readonly onlyWoodFillMaterial: boolean;
+  readonly onOnlyWoodFillMaterialChange: (value: boolean) => void;
 }
 
 /**
@@ -37,6 +40,8 @@ export function BlockPickerStep({
   onSelectBlock,
   sourceBlockOrientation,
   onOrientationChange,
+  onlyWoodFillMaterial,
+  onOnlyWoodFillMaterialChange,
 }: BlockPickerStepProps) {
   const [search, setSearch] = useState("");
 
@@ -151,6 +156,14 @@ export function BlockPickerStep({
                 }
               />
               Allow biome-tinted blocks (grass, leaves)
+            </label>
+            <label className="checkbox">
+              <input
+                type="checkbox"
+                checked={onlyWoodFillMaterial}
+                onChange={(event) => onOnlyWoodFillMaterialChange(event.target.checked)}
+              />
+              Only use wood as fill material (logs, wood, planks — any species)
             </label>
           </div>
         </>

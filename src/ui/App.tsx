@@ -1,10 +1,11 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { clearCachedArchive, loadCachedArchive } from "../assets/archiveCache.ts";
 import { readMinecraftArchive, type MinecraftArchive } from "../assets/archiveReader.ts";
 import type { AxisOrientation } from "../assets/modelResolver.ts";
 import {
   buildPalette,
   DEFAULT_PALETTE_OPTIONS,
+  isWoodFamilyBlock,
   listAxisVariantBlocks,
   type PaletteBlock,
   type PaletteOptions,
@@ -25,6 +26,13 @@ export function App() {
   const [palette, setPalette] = useState<readonly PaletteBlock[]>([]);
   const [axisVariantBlocks, setAxisVariantBlocks] = useState<readonly PaletteBlock[]>([]);
   const [isLoadingPalette, setIsLoadingPalette] = useState(false);
+  /** Restricts FILL material to wood blocks only — unlike `paletteOptions`, this never hides a block from the "choose a block to scale" picker, only from what can be used to color it in. */
+  const [onlyWoodFillMaterial, setOnlyWoodFillMaterial] = useState(false);
+
+  const fillPalette = useMemo(
+    () => (onlyWoodFillMaterial ? palette.filter((block) => isWoodFamilyBlock(block.blockId)) : palette),
+    [palette, onlyWoodFillMaterial],
+  );
 
   const [sourceBlockId, setSourceBlockId] = useState<string | null>(null);
   /** Non-null only while `sourceBlockId` names a block from `axisVariantBlocks` — see `hasAxisVariants` in `assets/modelResolver.ts`. */
@@ -99,7 +107,7 @@ export function App() {
   }, []);
 
   async function handleBuild(): Promise<void> {
-    if (archive === null || sourceBlockId === null || edgeBlocks === null || palette.length === 0) return;
+    if (archive === null || sourceBlockId === null || edgeBlocks === null || fillPalette.length === 0) return;
     setIsBuilding(true);
     setBuildError(null);
     try {
@@ -109,7 +117,7 @@ export function App() {
         sourceBlockOrientation,
         edgeBlocks,
         fillStyle,
-        palette,
+        palette: fillPalette,
       });
       setResult(built);
     } catch (cause) {
@@ -119,7 +127,7 @@ export function App() {
     }
   }
 
-  const canBuild = archive !== null && sourceBlockId !== null && edgeBlocks !== null && palette.length > 0;
+  const canBuild = archive !== null && sourceBlockId !== null && edgeBlocks !== null && fillPalette.length > 0;
 
   return (
     <main>
@@ -168,6 +176,11 @@ export function App() {
           setSourceBlockOrientation(orientation);
           setResult(null);
         }}
+        onlyWoodFillMaterial={onlyWoodFillMaterial}
+        onOnlyWoodFillMaterialChange={(value) => {
+          setOnlyWoodFillMaterial(value);
+          setResult(null);
+        }}
       />
 
       <ScaleAndOptionsStep
@@ -192,6 +205,13 @@ export function App() {
         <button type="button" className="primary" disabled={!canBuild || isBuilding} onClick={handleBuild}>
           {isBuilding ? "Building…" : "Build replica"}
         </button>
+        {onlyWoodFillMaterial && palette.length > 0 && fillPalette.length === 0 && (
+          <p className="error-text">
+            "Only use wood blocks" left nothing to build with — your archive's wood blocks were already
+            excluded by one of the toggles above (or it has none at all). Try relaxing a toggle or turning
+            this one off.
+          </p>
+        )}
         {buildError !== null && <p className="error-text">{buildError}</p>}
       </section>
 
