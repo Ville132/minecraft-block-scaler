@@ -49,8 +49,8 @@ export interface BuildReplicaResult {
   readonly fileName: string;
   /** The source block's own decoded faces — what the preview UI compares the replica against. */
   readonly sourceFaceTextures: Readonly<Record<CubeFaceDirection, DecodedTexture>>;
-  /** One representative decoded texture per DISTINCT block id actually used as fill (keyed by `blockId`, matching `materialList`'s own entries) — lets the preview UI render each voxel's real texture instead of its flat averaged color. Missing an entry only if that block's texture became unresolvable or unreadable between the palette build and this build, which `voxels`/`materialList` having already resolved it moments earlier makes exceedingly unlikely, not impossible. */
-  readonly usedBlockTextures: ReadonlyMap<string, DecodedTexture>;
+  /** Every face's decoded texture per DISTINCT block id actually used as fill (keyed by `blockId`, matching `materialList`'s own entries) — lets the preview UI render each voxel's real texture, on the correct face, instead of its flat averaged color. Missing an entry only if that block's textures became unresolvable or unreadable between the palette build and this build, which `voxels`/`materialList` having already resolved it moments earlier makes exceedingly unlikely, not impossible. */
+  readonly usedBlockTextures: ReadonlyMap<string, Readonly<Record<CubeFaceDirection, DecodedTexture>>>;
   /** Which block was auto-picked for the invisible interior — see {@link pickInteriorFillBlock} — or `null` when `fillStyle` wasn't `"solid-cheap-core"`. Surfaced purely so the UI can tell the user what it chose; `materialList`'s own count for this block already reflects the choice either way. */
   readonly interiorFillBlockId: string | null;
   /** How much `maxDistinctBlocks` simplified this build — `null` when no cap was requested, or the build was already at or under it (a genuine no-op, not worth mentioning). See `domain/consolidate.ts`. */
@@ -97,42 +97,53 @@ export function pickInteriorFillBlock(palette: readonly PaletteBlock[]): Palette
 }
 
 /**
- * One representative decoded texture for `blockId`, re-resolving its
- * model the same way `palette.ts` originally did (canonical variant
- * first, axis-pillar "upright" as a fallback) — a `PaletteBlock` itself
- * only carries a precomputed averaged `color`, not a texture reference,
- * so getting an actual texture back for the preview means resolving it
- * again here, same as `buildReplica` already does for the source block.
- * Picks the "up" face as the one representative texture; a block with
- * several distinct face textures (e.g. a `cube_bottom_top` shape) is
- * still shown as ONE tile in the preview, which is a simplification
- * worth making for a single small preview swatch rather than rendering
- * per-voxel-face accuracy that would be lost at that size anyway.
+ * Every face's decoded texture for `blockId`, re-resolving its model
+ * the same way `palette.ts` originally did (canonical variant first,
+ * axis-pillar "upright" as a fallback) — a `PaletteBlock` itself only
+ * carries a precomputed averaged `color`, not a texture reference, so
+ * getting actual textures back for the preview means resolving the
+ * model again here, same as `buildReplica` already does for the source
+ * block. Resolves all six faces, not just one: a block with real
+ * per-face variation (an axis-pillar's bark sides vs. end-grain caps, a
+ * `cube_bottom_top` shape's different top/bottom/sides) needs its OWN
+ * matching face shown on each side of the preview, or a log used as
+ * fill material would show its end-grain on every side of the replica,
+ * not just top and bottom — exactly the fidelity this view promises and
+ * would otherwise quietly break. Every face texture that happens to
+ * share one underlying texture id (the common case: a plain single-
+ * texture block) is resolved once and reused via `decodedByTextureId`,
+ * same caching this function always had; only a genuinely multi-texture
+ * block pays for more than one decode.
  *
- * Output: the decoded texture, or `undefined` if `blockId` no longer
- * resolves or its texture can't be read — the preview simply falls back
- * to that voxel's flat averaged color in that case (see
- * `ui/PreviewCanvas.tsx`), same as every voxel did before this existed.
+ * Output: a texture per {@link CubeFaceDirection}, or `undefined` if
+ * `blockId` no longer resolves or any of its textures can't be read —
+ * the preview simply falls back to that voxel's flat averaged color in
+ * that case (see `ui/PreviewCanvas.tsx`), same as every voxel did
+ * before this existed.
  */
-async function resolveRepresentativeTexture(
+async function resolveRepresentativeFaceTextures(
   archive: MinecraftArchive,
   blockId: string,
   decodedByTextureId: Map<string, DecodedTexture>,
-): Promise<DecodedTexture | undefined> {
+): Promise<Readonly<Record<CubeFaceDirection, DecodedTexture>> | undefined> {
   const model =
     resolveCanonicalVariantCubeModel(archive, blockId)?.model ??
     (hasAxisVariants(archive, blockId) ? resolveAxisVariantCubeModel(archive, blockId, "upright") : undefined);
   if (model === undefined) return undefined;
 
-  const textureId = model.faceTextureIds.up;
-  let decoded = decodedByTextureId.get(textureId);
-  if (decoded === undefined) {
-    const bytes = archive.getFile(texturePath(textureId));
-    if (bytes === undefined) return undefined;
-    decoded = await decodePngTexture(bytes);
-    decodedByTextureId.set(textureId, decoded);
+  const textures = {} as Record<CubeFaceDirection, DecodedTexture>;
+  for (const direction of CUBE_FACE_DIRECTIONS) {
+    const textureId = model.faceTextureIds[direction];
+    let decoded = decodedByTextureId.get(textureId);
+    if (decoded === undefined) {
+      const bytes = archive.getFile(texturePath(textureId));
+      if (bytes === undefined) return undefined;
+      decoded = await decodePngTexture(bytes);
+      decodedByTextureId.set(textureId, decoded);
+    }
+    textures[direction] = decoded;
   }
-  return decoded;
+  return textures;
 }
 
 /**
@@ -257,10 +268,10 @@ export async function buildReplica(params: BuildReplicaParams): Promise<BuildRep
   const schematicBytes = writeSchematicBytes({ sourceBlockId, edgeBlocks, fillStyle, voxels });
   const fileName = schematicFileName(sourceBlockId, edgeBlocks);
 
-  const usedBlockTextures = new Map<string, DecodedTexture>();
+  const usedBlockTextures = new Map<string, Readonly<Record<CubeFaceDirection, DecodedTexture>>>();
   for (const entry of materialList) {
-    const texture = await resolveRepresentativeTexture(archive, entry.blockId, decodedByTextureId);
-    if (texture !== undefined) usedBlockTextures.set(entry.blockId, texture);
+    const textures = await resolveRepresentativeFaceTextures(archive, entry.blockId, decodedByTextureId);
+    if (textures !== undefined) usedBlockTextures.set(entry.blockId, textures);
   }
 
   return {

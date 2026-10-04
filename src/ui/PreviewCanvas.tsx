@@ -115,7 +115,7 @@ interface RealisticReplicaFaceCanvasProps {
   readonly direction: CubeFaceDirection;
   readonly edgeBlocks: number;
   readonly voxelByPosition: ReadonlyMap<string, Voxel>;
-  readonly usedBlockTextures: ReadonlyMap<string, DecodedTexture>;
+  readonly usedBlockTextures: ReadonlyMap<string, Readonly<Record<CubeFaceDirection, DecodedTexture>>>;
 }
 
 /**
@@ -152,7 +152,7 @@ function RealisticReplicaFaceCanvas({
         const voxel = voxelByPosition.get(`${x},${y},${z}`);
         if (voxel === undefined) continue; // geometrically unreachable: every face position is on the shell
 
-        const texture = usedBlockTextures.get(voxel.paletteBlock.blockId);
+        const texture = usedBlockTextures.get(voxel.paletteBlock.blockId)?.[direction];
         for (let dy = 0; dy < tilePx; dy++) {
           for (let dx = 0; dx < tilePx; dx++) {
             const { r, g, b } =
@@ -185,7 +185,7 @@ export interface PreviewCanvasProps {
   readonly edgeBlocks: number;
   readonly voxels: readonly Voxel[];
   readonly sourceFaceTexture: DecodedTexture;
-  readonly usedBlockTextures: ReadonlyMap<string, DecodedTexture>;
+  readonly usedBlockTextures: ReadonlyMap<string, Readonly<Record<CubeFaceDirection, DecodedTexture>>>;
 }
 
 export function PreviewCanvas({
