@@ -24,6 +24,13 @@ export function ResultPanel({ result, edgeBlocks }: ResultPanelProps) {
       <p className="hint-text">
         {totalBlocks.toLocaleString()} blocks total across {result.materialList.length} block type
         {result.materialList.length === 1 ? "" : "s"}.
+        {result.interiorFillBlockId !== null && (
+          <>
+            {" "}
+            The hidden interior uses <code>{result.interiorFillBlockId}</code> — cheap and never visible, so it
+            wasn't color-matched.
+          </>
+        )}
       </p>
 
       <div className="material-table-wrap">

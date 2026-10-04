@@ -30,7 +30,20 @@ import type { PaletteBlock } from "./palette.ts";
 
 export type { DitherOptions } from "./dither.ts";
 
-export type FillStyle = "hollow" | "solid";
+/**
+ * `"hollow"` fills only the outer shell (see {@link isShellVoxel}).
+ * `"solid-cheap-core"` and `"solid-full"` both fill every position, but
+ * differ in what the INTERIOR — the part no one will ever see once the
+ * shell closes over it — is made of: `"solid-full"` color-matches every
+ * interior voxel exactly like a shell voxel, which for a large build
+ * means tens of thousands of individually-gathered blocks chosen for a
+ * color nobody can look at; `"solid-cheap-core"` instead fills the
+ * entire interior with one fixed, cheap block (see
+ * {@link BuildVoxelGridParams.interiorFillBlock}), which is both honest
+ * (a hidden block has no "right" color to match) and a large material
+ * saving.
+ */
+export type FillStyle = "hollow" | "solid-cheap-core" | "solid-full";
 
 export interface Voxel {
   readonly x: number;
@@ -60,6 +73,8 @@ export interface BuildVoxelGridParams {
   readonly varianceWeight?: number;
   /** Enables Floyd-Steinberg error-diffusion dithering (see `dither.ts`) when present; omitted entirely disables it, reproducing plain per-pixel nearest-match exactly as before dithering existed. Off by default — dithering trades a flat, uniformly-off look for a more accurate one from a distance at the cost of a speckled look up close, and that tradeoff is the user's call. */
   readonly dither?: DitherOptions;
+  /** Required when `fillStyle` is `"solid-cheap-core"` (and ignored otherwise): the single block every interior voxel is filled with, skipping color-matching for that voxel entirely. */
+  readonly interiorFillBlock?: PaletteBlock;
 }
 
 function assertPositiveInteger(value: number, label: string): void {
@@ -389,11 +404,21 @@ function lookupDitheredBlock(grid: DitheredFaceGrid, uStart: number, vStart: num
  * ordinary user input.
  */
 export function buildVoxelGrid(params: BuildVoxelGridParams): Voxel[] {
-  const { edgeBlocks, fillStyle, sourceFaceTextures, palette, varianceWeight = DEFAULT_VARIANCE_WEIGHT, dither } =
-    params;
+  const {
+    edgeBlocks,
+    fillStyle,
+    sourceFaceTextures,
+    palette,
+    varianceWeight = DEFAULT_VARIANCE_WEIGHT,
+    dither,
+    interiorFillBlock,
+  } = params;
   assertPositiveInteger(edgeBlocks, "edgeBlocks");
   if (palette.length === 0) {
     throw new RangeError("buildVoxelGrid requires at least one palette block to build with");
+  }
+  if (fillStyle === "solid-cheap-core" && interiorFillBlock === undefined) {
+    throw new RangeError("buildVoxelGrid requires an interiorFillBlock when fillStyle is 'solid-cheap-core'");
   }
   for (const direction of CUBE_FACE_DIRECTIONS) {
     const texture = sourceFaceTextures[direction];
@@ -441,7 +466,18 @@ export function buildVoxelGrid(params: BuildVoxelGridParams): Voxel[] {
   for (let y = 0; y < edgeBlocks; y++) {
     for (let z = 0; z < edgeBlocks; z++) {
       for (let x = 0; x < edgeBlocks; x++) {
-        if (fillStyle === "hollow" && !isShellVoxel(x, y, z, edgeBlocks)) continue;
+        const isShell = isShellVoxel(x, y, z, edgeBlocks);
+        if (fillStyle === "hollow" && !isShell) continue;
+
+        // An interior voxel of a cheap-core solid build is never
+        // color-matched at all — it is categorically invisible once the
+        // shell closes over it, so there is no "right" color to look
+        // for, only a cheap, fixed one to place. interiorFillBlock is
+        // guaranteed defined here by the validation above.
+        if (fillStyle === "solid-cheap-core" && !isShell) {
+          voxels.push({ x, y, z, paletteBlock: interiorFillBlock! });
+          continue;
+        }
 
         const directions = governingFaces(x, y, z, edgeBlocks);
         const samples = faceSamplesAt(directions, x, y, z, edgeBlocks, sourceFaceTextures);

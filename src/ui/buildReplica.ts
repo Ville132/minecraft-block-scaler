@@ -47,6 +47,38 @@ export interface BuildReplicaResult {
   readonly sourceFaceTextures: Readonly<Record<CubeFaceDirection, DecodedTexture>>;
   /** One representative decoded texture per DISTINCT block id actually used as fill (keyed by `blockId`, matching `materialList`'s own entries) — lets the preview UI render each voxel's real texture instead of its flat averaged color. Missing an entry only if that block's texture became unresolvable or unreadable between the palette build and this build, which `voxels`/`materialList` having already resolved it moments earlier makes exceedingly unlikely, not impossible. */
   readonly usedBlockTextures: ReadonlyMap<string, DecodedTexture>;
+  /** Which block was auto-picked for the invisible interior — see {@link pickInteriorFillBlock} — or `null` when `fillStyle` wasn't `"solid-cheap-core"`. Surfaced purely so the UI can tell the user what it chose; `materialList`'s own count for this block already reflects the choice either way. */
+  readonly interiorFillBlockId: string | null;
+}
+
+/**
+ * Picks which block fills every invisible interior voxel of a
+ * `"solid-cheap-core"` build: the cheapest candidate in `palette` (see
+ * `domain/palette.ts`'s `acquisitionCostOf`), tie-broken by the flattest
+ * texture, tie-broken by block id for full determinism. Texture
+ * busyness has no real effect on a block nobody will ever see — it only
+ * exists to make an otherwise-arbitrary final tie-break reproducible
+ * rather than dependent on archive iteration order.
+ *
+ * Inputs: `palette`, the fill candidate pool — must be non-empty (same
+ * precondition `buildVoxelGrid` itself already has).
+ * Output: the chosen block.
+ */
+export function pickInteriorFillBlock(palette: readonly PaletteBlock[]): PaletteBlock {
+  let best = palette[0]!;
+  for (const candidate of palette) {
+    const isCheaper = candidate.acquisitionCost < best.acquisitionCost;
+    const isTiedOnCostButFlatter =
+      candidate.acquisitionCost === best.acquisitionCost && candidate.textureVariance < best.textureVariance;
+    const isTiedOnCostAndVarianceButEarlierId =
+      candidate.acquisitionCost === best.acquisitionCost &&
+      candidate.textureVariance === best.textureVariance &&
+      candidate.blockId.localeCompare(best.blockId) < 0;
+    if (isCheaper || isTiedOnCostButFlatter || isTiedOnCostAndVarianceButEarlierId) {
+      best = candidate;
+    }
+  }
+  return best;
 }
 
 /**
@@ -171,6 +203,8 @@ export async function buildReplica(params: BuildReplicaParams): Promise<BuildRep
     sourceFaceTextures[direction] = decoded;
   }
 
+  const interiorFillBlock = fillStyle === "solid-cheap-core" ? pickInteriorFillBlock(palette) : undefined;
+
   const voxels = buildVoxelGrid({
     edgeBlocks,
     fillStyle,
@@ -178,6 +212,7 @@ export async function buildReplica(params: BuildReplicaParams): Promise<BuildRep
     palette,
     ...(varianceWeight !== undefined && { varianceWeight }),
     ...(dither !== undefined && { dither }),
+    ...(interiorFillBlock !== undefined && { interiorFillBlock }),
   });
   const materialList = buildMaterialList(voxels);
   const schematicBytes = writeSchematicBytes({ sourceBlockId, edgeBlocks, fillStyle, voxels });
@@ -189,5 +224,13 @@ export async function buildReplica(params: BuildReplicaParams): Promise<BuildRep
     if (texture !== undefined) usedBlockTextures.set(entry.blockId, texture);
   }
 
-  return { voxels, materialList, schematicBytes, fileName, sourceFaceTextures, usedBlockTextures };
+  return {
+    voxels,
+    materialList,
+    schematicBytes,
+    fileName,
+    sourceFaceTextures,
+    usedBlockTextures,
+    interiorFillBlockId: interiorFillBlock?.blockId ?? null,
+  };
 }

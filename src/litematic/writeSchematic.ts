@@ -105,7 +105,8 @@ export function writeSchematicBytes(params: WriteSchematicParams): Uint8Array {
   const blockStates = toSignedLongArray(packBlockStateIndices(paletteIndices, bits));
 
   const timestampMs = BigInt(Math.trunc((params.now ?? Date.now)()));
-  const fillStyleLabel = fillStyle === "hollow" ? "Hollow" : "Solid";
+  const fillStyleLabel =
+    fillStyle === "hollow" ? "Hollow" : fillStyle === "solid-cheap-core" ? "Solid (cheap core)" : "Solid";
 
   const region = nbt.compound({
     Position: nbt.compound({ x: nbt.int(0), y: nbt.int(0), z: nbt.int(0) }),

@@ -161,14 +161,23 @@ export function ScaleAndOptionsStep({
           />
           Hollow shell (less material, same outside appearance)
         </label>
-        <label>
+        <label title="Fills the inside with one cheap block instead of color-matching it — a hidden block has no 'right' color to match, so this skips gathering thousands of blocks nobody will ever see.">
           <input
             type="radio"
             name="fillStyle"
-            checked={fillStyle === "solid"}
-            onChange={() => onFillStyleChange("solid")}
+            checked={fillStyle === "solid-cheap-core"}
+            onChange={() => onFillStyleChange("solid-cheap-core")}
           />
-          Solid (much more material, survives being dug into)
+          Solid, cheap core (survives being dug into, cheap inside)
+        </label>
+        <label title="Every interior block is individually color-matched too, same as the surface — far more material for no visible difference.">
+          <input
+            type="radio"
+            name="fillStyle"
+            checked={fillStyle === "solid-full"}
+            onChange={() => onFillStyleChange("solid-full")}
+          />
+          Solid, fully matched (much more material)
         </label>
       </div>
 

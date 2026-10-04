@@ -40,14 +40,14 @@ describe("schematicFileName", () => {
 describe("writeSchematicBytes", () => {
   it("rejects an empty voxel list", () => {
     expect(() =>
-      writeSchematicBytes({ sourceBlockId: "stone", edgeBlocks: 2, fillStyle: "solid", voxels: [] }),
+      writeSchematicBytes({ sourceBlockId: "stone", edgeBlocks: 2, fillStyle: "solid-full", voxels: [] }),
     ).toThrow(RangeError);
   });
 
   it("rejects a non-positive edgeBlocks", () => {
     const voxels: Voxel[] = [{ x: 0, y: 0, z: 0, paletteBlock: fakeBlock("stone") }];
     expect(() =>
-      writeSchematicBytes({ sourceBlockId: "stone", edgeBlocks: 0, fillStyle: "solid", voxels }),
+      writeSchematicBytes({ sourceBlockId: "stone", edgeBlocks: 0, fillStyle: "solid-full", voxels }),
     ).toThrow(RangeError);
   });
 
@@ -68,7 +68,7 @@ describe("writeSchematicBytes", () => {
     const bytes = writeSchematicBytes({
       sourceBlockId: "stone",
       edgeBlocks: 2,
-      fillStyle: "solid",
+      fillStyle: "solid-full",
       voxels,
       now: () => 1_700_000_000_000,
     });
@@ -128,7 +128,7 @@ describe("writeSchematicBytes", () => {
     const bytes = writeSchematicBytes({
       sourceBlockId: "stone",
       edgeBlocks: 2,
-      fillStyle: "solid",
+      fillStyle: "solid-full",
       voxels,
       now: () => 0,
     });
@@ -149,7 +149,7 @@ describe("writeSchematicBytes", () => {
     const bytes = writeSchematicBytes({
       sourceBlockId: "furnace",
       edgeBlocks: 2,
-      fillStyle: "solid",
+      fillStyle: "solid-full",
       voxels,
       now: () => 0,
     });
@@ -189,7 +189,7 @@ describe("writeSchematicBytes", () => {
     const bytes = writeSchematicBytes({
       sourceBlockId: "glazed_terracotta",
       edgeBlocks: 2,
-      fillStyle: "solid",
+      fillStyle: "solid-full",
       voxels,
       now: () => 0,
     });

@@ -183,7 +183,7 @@ describe("buildVoxelGrid", () => {
   it("matches the plan's hollow/solid counts at edge 16", () => {
     const sourceFaceTextures = uniformFaceTextures(RED);
     const hollow = buildVoxelGrid({ edgeBlocks: 16, fillStyle: "hollow", sourceFaceTextures, palette: PALETTE });
-    const solid = buildVoxelGrid({ edgeBlocks: 16, fillStyle: "solid", sourceFaceTextures, palette: PALETTE });
+    const solid = buildVoxelGrid({ edgeBlocks: 16, fillStyle: "solid-full", sourceFaceTextures, palette: PALETTE });
     expect(hollow).toHaveLength(hollowBlockCount(16));
     expect(solid).toHaveLength(solidBlockCount(16));
   });
@@ -198,7 +198,7 @@ describe("buildVoxelGrid", () => {
 
   it("solid fill has no gaps: every (x,y,z) in range appears exactly once", () => {
     const sourceFaceTextures = uniformFaceTextures(RED);
-    const solid = buildVoxelGrid({ edgeBlocks: 4, fillStyle: "solid", sourceFaceTextures, palette: PALETTE });
+    const solid = buildVoxelGrid({ edgeBlocks: 4, fillStyle: "solid-full", sourceFaceTextures, palette: PALETTE });
     const seen = new Set(solid.map((v) => `${v.x},${v.y},${v.z}`));
     expect(seen.size).toBe(solid.length);
     for (let x = 0; x < 4; x++) {
@@ -212,7 +212,7 @@ describe("buildVoxelGrid", () => {
 
   it("picks the nearest palette color uniformly when the source is a single solid color", () => {
     const sourceFaceTextures = uniformFaceTextures(RED);
-    const voxels = buildVoxelGrid({ edgeBlocks: 8, fillStyle: "solid", sourceFaceTextures, palette: PALETTE });
+    const voxels = buildVoxelGrid({ edgeBlocks: 8, fillStyle: "solid-full", sourceFaceTextures, palette: PALETTE });
     expect(voxels.every((v) => v.paletteBlock.blockId === "red_wool")).toBe(true);
   });
 
@@ -236,7 +236,7 @@ describe("buildVoxelGrid", () => {
     };
     const palette = [exactButNoisy, closeButFlat];
 
-    const withVariancePenalty = buildVoxelGrid({ edgeBlocks: 4, fillStyle: "solid", sourceFaceTextures, palette });
+    const withVariancePenalty = buildVoxelGrid({ edgeBlocks: 4, fillStyle: "solid-full", sourceFaceTextures, palette });
     expect(withVariancePenalty.every((v) => v.paletteBlock.blockId === "flat_offred_wool")).toBe(true);
 
     // Explicitly at weight 0, the exact (but noisy) color match wins
@@ -244,7 +244,7 @@ describe("buildVoxelGrid", () => {
     // at work, not some other difference between the two candidates.
     const pureColorMatch = buildVoxelGrid({
       edgeBlocks: 4,
-      fillStyle: "solid",
+      fillStyle: "solid-full",
       sourceFaceTextures,
       palette,
       varianceWeight: 0,
@@ -336,7 +336,7 @@ describe("buildVoxelGrid", () => {
 
   it("rejects an empty palette", () => {
     const sourceFaceTextures = uniformFaceTextures(RED);
-    expect(() => buildVoxelGrid({ edgeBlocks: 4, fillStyle: "solid", sourceFaceTextures, palette: [] })).toThrow(
+    expect(() => buildVoxelGrid({ edgeBlocks: 4, fillStyle: "solid-full", sourceFaceTextures, palette: [] })).toThrow(
       RangeError,
     );
   });
@@ -344,14 +344,68 @@ describe("buildVoxelGrid", () => {
   it("rejects a non-square source face texture as an internal invariant violation", () => {
     const sourceFaceTextures = uniformFaceTextures(RED);
     sourceFaceTextures.up = { width: 16, height: 32, pixels: new Uint8ClampedArray(16 * 32 * 4) };
-    expect(() => buildVoxelGrid({ edgeBlocks: 4, fillStyle: "solid", sourceFaceTextures, palette: PALETTE })).toThrow();
+    expect(() => buildVoxelGrid({ edgeBlocks: 4, fillStyle: "solid-full", sourceFaceTextures, palette: PALETTE })).toThrow();
   });
 
   it("rejects a non-positive edgeBlocks", () => {
     const sourceFaceTextures = uniformFaceTextures(RED);
-    expect(() => buildVoxelGrid({ edgeBlocks: 0, fillStyle: "solid", sourceFaceTextures, palette: PALETTE })).toThrow(
+    expect(() => buildVoxelGrid({ edgeBlocks: 0, fillStyle: "solid-full", sourceFaceTextures, palette: PALETTE })).toThrow(
       RangeError,
     );
+  });
+
+  describe("solid-cheap-core fill style", () => {
+    it("fills every interior voxel with interiorFillBlock, leaving the shell individually color-matched as usual", () => {
+      const sourceFaceTextures = uniformFaceTextures(RED);
+      sourceFaceTextures.up = solidTexture(16, GREEN); // so the shell isn't uniformly red_wool either
+      const coreBlock = paletteBlock("cheap_core_stone", [128, 128, 128]);
+      const voxels = buildVoxelGrid({
+        edgeBlocks: 4,
+        fillStyle: "solid-cheap-core",
+        sourceFaceTextures,
+        palette: PALETTE,
+        interiorFillBlock: coreBlock,
+      });
+
+      expect(voxels).toHaveLength(solidBlockCount(4));
+      for (const voxel of voxels) {
+        if (isShellVoxel(voxel.x, voxel.y, voxel.z, 4)) {
+          // Shell voxels are still color-matched, same as any other fill style.
+          expect(voxel.paletteBlock.blockId).not.toBe("cheap_core_stone");
+        } else {
+          expect(voxel.paletteBlock.blockId).toBe("cheap_core_stone");
+        }
+      }
+    });
+
+    it("rejects a missing interiorFillBlock instead of silently falling back to color-matching", () => {
+      const sourceFaceTextures = uniformFaceTextures(RED);
+      expect(() =>
+        buildVoxelGrid({ edgeBlocks: 4, fillStyle: "solid-cheap-core", sourceFaceTextures, palette: PALETTE }),
+      ).toThrow(RangeError);
+    });
+
+    it("ignores an interiorFillBlock supplied for hollow or solid-full (no interior to use it on, or the interior is matched like everything else)", () => {
+      const sourceFaceTextures = uniformFaceTextures(RED);
+      const coreBlock = paletteBlock("cheap_core_stone", [128, 128, 128]);
+      const hollow = buildVoxelGrid({
+        edgeBlocks: 4,
+        fillStyle: "hollow",
+        sourceFaceTextures,
+        palette: PALETTE,
+        interiorFillBlock: coreBlock,
+      });
+      expect(hollow.some((v) => v.paletteBlock.blockId === "cheap_core_stone")).toBe(false);
+
+      const solidFull = buildVoxelGrid({
+        edgeBlocks: 4,
+        fillStyle: "solid-full",
+        sourceFaceTextures,
+        palette: PALETTE,
+        interiorFillBlock: coreBlock,
+      });
+      expect(solidFull.every((v) => v.paletteBlock.blockId === "red_wool")).toBe(true);
+    });
   });
 
   describe("dither option", () => {
