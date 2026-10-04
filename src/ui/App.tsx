@@ -77,6 +77,8 @@ export function App() {
   const [isBuilding, setIsBuilding] = useState(false);
   const [buildError, setBuildError] = useState<string | null>(null);
   const [result, setResult] = useState<BuildReplicaResult | null>(null);
+  /** True once any option changes after a build — the result stays on screen (it's still valid data, just from before the change) rather than vanishing, so "is this tweak better?" can actually be answered by comparison instead of a blind rebuild. Only a SUCCESSFUL rebuild clears it; a failed one leaves the last working result in place, still clearly marked stale, alongside the new error. */
+  const [resultIsStale, setResultIsStale] = useState(false);
 
   // Re-derives both the fill palette and the axis-pillar candidate list
   // whenever the archive or its options change. A stale request guard
@@ -157,6 +159,7 @@ export function App() {
         ...(maxDistinctBlocks !== null && { maxDistinctBlocks }),
       });
       setResult(built);
+      setResultIsStale(false);
     } catch (cause) {
       setBuildError(cause instanceof Error ? cause.message : String(cause));
     } finally {
@@ -196,7 +199,7 @@ export function App() {
           setLoadedFromCache(false);
           setSourceBlockId(null);
           setSourceBlockOrientation(null);
-          setResult(null);
+          setResultIsStale(true);
         }}
         onArchiveCleared={() => {
           setArchive(null);
@@ -204,7 +207,7 @@ export function App() {
           setLoadedFromCache(false);
           setSourceBlockId(null);
           setSourceBlockOrientation(null);
-          setResult(null);
+          setResultIsStale(true);
         }}
       />
 
@@ -220,22 +223,22 @@ export function App() {
           setSourceBlockId(blockId);
           const isAxisVariant = axisVariantBlocks.some((block) => block.blockId === blockId);
           setSourceBlockOrientation(isAxisVariant ? "upright" : null);
-          setResult(null);
+          setResultIsStale(true);
         }}
         sourceBlockOrientation={sourceBlockOrientation}
         onOrientationChange={(orientation) => {
           setSourceBlockOrientation(orientation);
-          setResult(null);
+          setResultIsStale(true);
         }}
         onlyWoodFillMaterial={onlyWoodFillMaterial}
         onOnlyWoodFillMaterialChange={(value) => {
           setOnlyWoodFillMaterial(value);
-          setResult(null);
+          setResultIsStale(true);
         }}
         avoidFlammableFillMaterial={avoidFlammableFillMaterial}
         onAvoidFlammableFillMaterialChange={(value) => {
           setAvoidFlammableFillMaterial(value);
-          setResult(null);
+          setResultIsStale(true);
         }}
       />
 
@@ -245,27 +248,27 @@ export function App() {
         edgeBlocks={edgeBlocks}
         onEdgeBlocksChange={(edge) => {
           setEdgeBlocks(edge);
-          setResult(null);
+          setResultIsStale(true);
         }}
         fillStyle={fillStyle}
         onFillStyleChange={(style) => {
           setFillStyle(style);
-          setResult(null);
+          setResultIsStale(true);
         }}
         varianceWeight={varianceWeight}
         onVarianceWeightChange={(weight) => {
           setVarianceWeight(weight);
-          setResult(null);
+          setResultIsStale(true);
         }}
         ditherEnabled={ditherEnabled}
         onDitherEnabledChange={(enabled) => {
           setDitherEnabled(enabled);
-          setResult(null);
+          setResultIsStale(true);
         }}
         maxDistinctBlocks={maxDistinctBlocks}
         onMaxDistinctBlocksChange={(value) => {
           setMaxDistinctBlocks(value);
-          setResult(null);
+          setResultIsStale(true);
         }}
       />
 
@@ -275,8 +278,14 @@ export function App() {
           Build
         </h2>
         <button type="button" className="primary" disabled={!canBuild || isBuilding} onClick={handleBuild}>
-          {isBuilding ? "Building…" : "Build replica"}
+          {isBuilding ? "Building…" : result !== null && resultIsStale ? "Rebuild replica" : "Build replica"}
         </button>
+        {result !== null && resultIsStale && (
+          <p className="hint-text">
+            Your options have changed since this result was built — it's still shown below, but rebuild to see
+            the effect of your latest change.
+          </p>
+        )}
         {(onlyWoodFillMaterial || avoidFlammableFillMaterial) && palette.length > 0 && fillPalette.length === 0 && (
           <p className="error-text">
             "{onlyWoodFillMaterial ? "Only use wood blocks" : "Avoid flammable blocks"}" left nothing to build
