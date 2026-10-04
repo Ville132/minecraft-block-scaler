@@ -12,6 +12,37 @@ worth acting on, and explicitly records the ones that are **not** worth acting o
 and why — because for a project of this size, deciding what to skip is most of the
 value.
 
+## Progress
+
+Checked off as each item ships, with a one-line pointer to where. Unchecked items
+are either not started or explicitly deferred (see each item's own text, or
+"Deliberately not doing" below) — this list doesn't distinguish the two; read the
+item itself for which.
+
+- [x] 1.1 Palette cap — `domain/consolidate.ts`
+- [x] 1.2 Cheap interior core — `shell.ts`'s `"solid-cheap-core"` fill style
+- [x] 1.3 Material list (per-layer breakdown, grand totals, properties, distinct
+      filenames, copy-to-clipboard) — raw-material decomposition and real
+      cross-block shulker packing still deliberately not done, see the item itself
+- [x] 1.4 Exclusion-list fixes — `domain/palette.ts`
+- [x] 1.5 Cost-aware tie-breaking — `acquisitionCost` in `color.ts`/`palette.ts`
+- [x] 2.1 Contrast preservation — `domain/contrast.ts`, the original bug report
+- [x] 2.2 Jensen gap fix — `palette.ts`'s `representativeAppearance`
+- [ ] 2.3 Down-scaled variance rule
+- [x] 2.4 Emissive blocks — `palette.ts`'s `applyEmissiveBoost`
+- [ ] 2.5 Small geometry edges (edgeBlocks 1/2 degenerate cases, side-face preview)
+- [ ] 3.1 Real Litematica fixture — needs you, not me
+- [x] 3.2 README false claim fix
+- [ ] 3.3 In-game orientation verification — needs you, not me
+- [ ] 4.1 Preview-only fast path
+- [ ] 4.2 Stop destroying the result on every tweak
+- [x] 4.3 Install instructions — `ResultPanel.tsx`
+- [x] 4.4 Broken guards (warning threshold, Int32 overflow cap) — `ScaleAndOptionsStep.tsx`
+- [ ] 4.5 Smaller UX repairs
+- [x] Tier 5: `unzipSync` filter — `archiveReader.ts`
+- [ ] Tier 5: everything else (palette memoization, blockstate memoization, model
+      JSON cache, IndexedDB hardening, gzip, vitest `.tsx` config)
+
 ### Three facts that drove the prioritisation
 
 Priority here is not generic. It follows from three things about how this app is
