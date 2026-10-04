@@ -30,15 +30,15 @@ item itself for which.
 - [x] 2.2 Jensen gap fix — `palette.ts`'s `representativeAppearance`
 - [ ] 2.3 Down-scaled variance rule
 - [x] 2.4 Emissive blocks — `palette.ts`'s `applyEmissiveBoost`
-- [ ] 2.5 Small geometry edges (edgeBlocks 1/2 degenerate cases, side-face preview)
+- [x] 2.5 Side-face preview fix (a fill block's wrong face showed on every side) — `buildReplica.ts`'s `resolveRepresentativeFaceTextures`; the edgeBlocks 1/2 degenerate-geometry half of this item is still open
 - [ ] 3.1 Real Litematica fixture — needs you, not me
 - [x] 3.2 README false claim fix
 - [ ] 3.3 In-game orientation verification — needs you, not me
 - [ ] 4.1 Preview-only fast path
-- [ ] 4.2 Stop destroying the result on every tweak
+- [x] 4.2 Stop destroying the result on every tweak — `App.tsx`'s `resultIsStale`
 - [x] 4.3 Install instructions — `ResultPanel.tsx`
 - [x] 4.4 Broken guards (warning threshold, Int32 overflow cap) — `ScaleAndOptionsStep.tsx`
-- [ ] 4.5 Smaller UX repairs
+- [x] 4.5 Smaller UX repairs (empty states, search feedback, localStorage persistence, confirm guard, selected-block context) — tooltip-to-visible-text still open
 - [x] Tier 5: `unzipSync` filter — `archiveReader.ts`
 - [ ] Tier 5: everything else (palette memoization, blockstate memoization, model
       JSON cache, IndexedDB hardening, gzip, vitest `.tsx` config)
