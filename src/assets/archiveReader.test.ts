@@ -49,6 +49,21 @@ describe("readMinecraftArchive", () => {
   it("rejects bytes that are not a valid zip", () => {
     expect(() => readMinecraftArchive(Uint8Array.from([1, 2, 3, 4]))).toThrow();
   });
+
+  it("skips inflating entries outside assets/minecraft and data/minecraft/recipe", () => {
+    const archive = readMinecraftArchive(
+      zipOf({
+        "assets/minecraft/textures/block/stone.png": "kept-asset",
+        "data/minecraft/recipe/stone.json": "kept-recipe",
+        "net/minecraft/client/Main.class": "skipped-class-file",
+      }),
+    );
+    expect(new TextDecoder().decode(archive.getFile("assets/minecraft/textures/block/stone.png"))).toBe(
+      "kept-asset",
+    );
+    expect(new TextDecoder().decode(archive.getFile("data/minecraft/recipe/stone.json"))).toBe("kept-recipe");
+    expect(archive.getFile("net/minecraft/client/Main.class")).toBeUndefined();
+  });
 });
 
 describe("listBlockIds", () => {

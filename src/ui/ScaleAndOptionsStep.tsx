@@ -39,8 +39,10 @@ export interface ScaleAndOptionsStepProps {
 }
 
 const DEFAULT_MAX_EDGE = 128;
-/** Above this many blocks, a synchronous client-side build would noticeably freeze the browser (there is no background worker — see PLAN.md's step 10, which explicitly allows cutting lower-priority polish first). */
-const MAX_VOXELS_BEFORE_WARNING = 4_000_000;
+/** Above this many blocks, a synchronous client-side build would noticeably freeze the browser (there is no background worker — see PLAN.md's step 10, which explicitly allows cutting lower-priority polish first). Applies to any selected size — a preset card as much as a custom one — since the freeze risk only depends on the resulting block count, not on how that size was picked. */
+const MAX_VOXELS_BEFORE_WARNING = 1_000_000;
+/** The largest custom edge length this app accepts. Not a soft guideline like `MAX_VOXELS_BEFORE_WARNING` above — `writeSchematic.ts` packs `edgeBlocks ** 3` into a signed 32-bit NBT int, which overflows into a negative, corrupt `TotalVolume` around 1291; this cap stays comfortably under that, and well under it a solid build there is already tens of millions of blocks, deep into "the tab will hang" territory anyway. */
+const MAX_CUSTOM_EDGE_BLOCKS = 1024;
 
 function blockCountFor(edgeBlocks: number, fillStyle: FillStyle): number {
   return fillStyle === "hollow" ? hollowBlockCount(edgeBlocks) : solidBlockCount(edgeBlocks);
@@ -91,7 +93,9 @@ export function ScaleAndOptionsStep({
   );
 
   const customSizeValue = Number.parseInt(customSizeText, 10);
-  const customSizeIsValid = customSizeText.trim() !== "" && Number.isInteger(customSizeValue) && customSizeValue > 0;
+  const customSizeIsInRange =
+    customSizeText.trim() !== "" && Number.isInteger(customSizeValue) && customSizeValue > 0;
+  const customSizeIsValid = customSizeIsInRange && customSizeValue <= MAX_CUSTOM_EDGE_BLOCKS;
   const customClassification = customSizeIsValid ? classifyScale(customSizeValue, texturePixelsPerSide) : null;
 
   return (
@@ -131,6 +135,7 @@ export function ScaleAndOptionsStep({
         <input
           type="number"
           min={1}
+          max={MAX_CUSTOM_EDGE_BLOCKS}
           placeholder="custom size"
           value={customSizeText}
           onChange={(event) => setCustomSizeText(event.target.value)}
@@ -144,6 +149,12 @@ export function ScaleAndOptionsStep({
           Use this size
         </button>
       </div>
+      {customSizeIsInRange && customSizeValue > MAX_CUSTOM_EDGE_BLOCKS && (
+        <p className="error-text">
+          {MAX_CUSTOM_EDGE_BLOCKS} is the largest size this app supports — the schematic format's own block-count
+          field can't represent anything bigger. Pick {MAX_CUSTOM_EDGE_BLOCKS} or smaller.
+        </p>
+      )}
       {customClassification?.kind === "distorted" && (
         <p className="error-text">
           {customSizeValue} doesn't divide or multiply {texturePixelsPerSide} evenly — the texture's pixel grid
@@ -152,10 +163,10 @@ export function ScaleAndOptionsStep({
           keep the original look.
         </p>
       )}
-      {customSizeIsValid && blockCountFor(customSizeValue, fillStyle) > MAX_VOXELS_BEFORE_WARNING && (
+      {edgeBlocks !== null && blockCountFor(edgeBlocks, fillStyle) > MAX_VOXELS_BEFORE_WARNING && (
         <p className="error-text">
-          That's {blockCountFor(customSizeValue, fillStyle).toLocaleString()} blocks — large enough to
-          freeze your browser for a while when building. Consider a smaller size.
+          That's {blockCountFor(edgeBlocks, fillStyle).toLocaleString()} blocks — large enough to freeze your
+          browser for a while when building. Consider a smaller size{fillStyle !== "hollow" ? " or the hollow-shell fill style" : ""}.
         </p>
       )}
 

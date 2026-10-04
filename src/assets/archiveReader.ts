@@ -15,6 +15,19 @@ export interface MinecraftArchive {
 }
 
 /**
+ * A full client jar is ~25MB across ~20k entries, nearly all of them
+ * `.class` files this app never reads — inflating those anyway costs
+ * real time and memory for nothing. Everything this app ever looks up
+ * lives under one of these two trees (block assets, and the recipe
+ * JSON `materials.ts`'s raw-material decomposition reads) — see
+ * `BLOCKSTATES_DIR`/`MODELS_DIR`/`TEXTURES_DIR` below and
+ * `assets/recipes.ts`'s `RECIPES_DIR`.
+ */
+function isEntryWorthInflating(entryName: string): boolean {
+  return entryName.startsWith("assets/minecraft/") || entryName.startsWith("data/minecraft/recipe/");
+}
+
+/**
  * Unzips archive bytes and wraps them for path-based lookup.
  *
  * Failure mode: throws `Error` (wrapping the underlying cause) only when
@@ -25,7 +38,7 @@ export interface MinecraftArchive {
 export function readMinecraftArchive(zipBytes: Uint8Array): MinecraftArchive {
   let entries: Record<string, Uint8Array>;
   try {
-    entries = unzipSync(zipBytes);
+    entries = unzipSync(zipBytes, { filter: (file) => isEntryWorthInflating(file.name) });
   } catch (cause) {
     throw new Error("Could not read the uploaded file as a zip/jar archive", { cause });
   }

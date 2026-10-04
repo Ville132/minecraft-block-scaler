@@ -50,8 +50,7 @@ size, and build.
    list broken into shulker boxes / stacks / loose items.
 6. **Schematic writer** (`src/litematic/`) — a from-scratch NBT writer and
    Litematica-compatible bit-packed block-state array, gzipped into a `.litematic`
-   file. Cross-checked against the independent Python `litemapy` library during
-   development.
+   file.
 
 ## Testing
 
