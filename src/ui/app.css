@@ -757,6 +757,63 @@ code {
   color: var(--text-dim);
 }
 
+.layer-breakdown {
+  margin: 14px 0 0;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--panel-raised);
+}
+
+.layer-breakdown summary {
+  padding: 10px 14px;
+  font-size: 13px;
+  color: var(--text-dim);
+  cursor: pointer;
+  user-select: none;
+}
+
+.layer-breakdown summary:hover {
+  color: var(--text);
+}
+
+.layer-breakdown[open] summary {
+  border-bottom: 1px solid var(--border);
+}
+
+.layer-list {
+  max-height: 260px;
+  overflow-y: auto;
+  scrollbar-color: var(--border-strong) transparent;
+}
+
+.layer-row {
+  display: flex;
+  gap: 10px;
+  padding: 7px 14px;
+  font-size: 12.5px;
+  border-bottom: 1px solid var(--border);
+}
+
+.layer-row:last-child {
+  border-bottom: none;
+}
+
+.layer-row:nth-child(even) {
+  background: rgba(255, 255, 255, 0.02);
+}
+
+.layer-y {
+  flex: 0 0 auto;
+  font-family: var(--font-mono);
+  color: var(--accent-bright);
+  white-space: nowrap;
+}
+
+.layer-entries {
+  color: var(--text-dim);
+  font-family: var(--font-mono);
+}
+
 .export-row {
   display: flex;
   flex-wrap: wrap;

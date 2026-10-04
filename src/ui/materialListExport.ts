@@ -15,11 +15,20 @@ function quantityLabel(entry: MaterialListEntry): string {
   return parts.join(" + ");
 }
 
-/** A plain-text shopping list, one line per block, most-needed first. */
+/** `{ facing: "north", half: "top" }` -> `"facing=north;half=top"` — empty string when there are no properties, so callers can omit the surrounding punctuation entirely rather than rendering an empty pair of brackets. */
+function formatProperties(properties: Readonly<Record<string, string>> | undefined): string {
+  if (properties === undefined) return "";
+  return Object.entries(properties)
+    .map(([key, value]) => `${key}=${value}`)
+    .join(";");
+}
+
+/** A plain-text shopping list, one line per block, most-needed first. A block with required placement properties (e.g. glazed terracotta's facing) shows them in brackets right after its id, since placing it facing the wrong way is as wrong as placing the wrong block. */
 export function materialListToText(list: readonly MaterialListEntry[]): string {
-  const lines = list.map(
-    (entry) => `${entry.resourceLocation}: ${entry.count} (${quantityLabel(entry)})`,
-  );
+  const lines = list.map((entry) => {
+    const propertiesSuffix = entry.properties !== undefined ? ` [${formatProperties(entry.properties)}]` : "";
+    return `${entry.resourceLocation}${propertiesSuffix}: ${entry.count} (${quantityLabel(entry)})`;
+  });
   return lines.join("\n");
 }
 
@@ -29,7 +38,7 @@ function escapeCsvField(value: string): string {
 
 /** A CSV with one row per block — importable into a spreadsheet. */
 export function materialListToCsv(list: readonly MaterialListEntry[]): string {
-  const header = "Block,Count,Shulker Boxes,Stacks,Singles";
+  const header = "Block,Count,Shulker Boxes,Stacks,Singles,Properties";
   const rows = list.map((entry) =>
     [
       escapeCsvField(entry.resourceLocation),
@@ -37,6 +46,7 @@ export function materialListToCsv(list: readonly MaterialListEntry[]): string {
       entry.breakdown.shulkerBoxes,
       entry.breakdown.stacks,
       entry.breakdown.singles,
+      escapeCsvField(formatProperties(entry.properties)),
     ].join(","),
   );
   return [header, ...rows].join("\n");
