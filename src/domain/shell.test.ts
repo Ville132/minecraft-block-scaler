@@ -4,7 +4,14 @@ import { averageLinearRgb, linearRgbToOklab, rgb8ToLinearRgb, rgb8ToOklab } from
 import { CUBE_FACE_DIRECTIONS, type CubeFaceDirection } from "./faces.ts";
 import type { PaletteBlock } from "./palette.ts";
 import { hollowBlockCount, solidBlockCount } from "./scale.ts";
-import { buildVoxelGrid, governingFaces, isShellVoxel, pixelRegionForVoxelCoord, positionOnFace } from "./shell.ts";
+import {
+  assessReplicaContrastHeadroom,
+  buildVoxelGrid,
+  governingFaces,
+  isShellVoxel,
+  pixelRegionForVoxelCoord,
+  positionOnFace,
+} from "./shell.ts";
 
 describe("isShellVoxel", () => {
   it("every voxel of a 1-edge or 2-edge cube is on the shell", () => {
@@ -486,5 +493,86 @@ describe("buildVoxelGrid", () => {
       // test above — dithering must not change this voxel's outcome.
       expect(voxelAt.get("0,5,0")?.paletteBlock.blockId).toBe("blend_wool");
     });
+  });
+
+  describe("contrast preservation (BACKLOG.md 2.1)", () => {
+    it("stretches a face's own narrow lightness range so two close source shades land on distinct blocks instead of collapsing onto the same nearest one", () => {
+      const darkGray: readonly [number, number, number] = [100, 100, 100];
+      const lightGray: readonly [number, number, number] = [130, 130, 130];
+      // Every face starts flat darkGray (so the other five faces are a
+      // no-op stretch and stay out of this test's way entirely — see
+      // this module's own "per face, not shared" reasoning); only "up"
+      // gets real internal structure: top half lightGray, bottom half
+      // darkGray, a deliberately SUBTLE native difference.
+      const sourceFaceTextures = uniformFaceTextures(darkGray);
+      sourceFaceTextures.up = verticallyStripedTexture(16, lightGray, darkGray);
+
+      // Spans the full possible range, but is SPARSE near darkGray/
+      // lightGray: gray_concrete is the only candidate anywhere close to
+      // either one, so without stretching, both shades would nearest-
+      // match it alike and the subtle distinction would be lost.
+      const wideSparsePalette = [
+        paletteBlock("black_concrete", [0, 0, 0]),
+        paletteBlock("gray_concrete", [128, 128, 128]),
+        paletteBlock("white_concrete", [255, 255, 255]),
+      ];
+
+      const voxels = buildVoxelGrid({
+        edgeBlocks: 16,
+        fillStyle: "hollow",
+        sourceFaceTextures,
+        palette: wideSparsePalette,
+      });
+      const voxelAt = new Map(voxels.map((v) => [`${v.x},${v.y},${v.z}`, v]));
+
+      // Up face, (x=8 interior, y=15 governs alone, z selects texture
+      // row/v since vAxis=z and vFlip=false for y-faces): z=2 -> v=2,
+      // texture's top half -> lightGray; z=13 -> v=13, bottom half ->
+      // darkGray. lightGray is the max of its own 2-value face
+      // population, so it stretches to EXACTLY the palette's own max
+      // (white); darkGray, the min, stretches to exactly the palette's
+      // own min (black) — not just "different from each other", but
+      // pushed all the way to the two ends of what's available.
+      const topVoxel = voxelAt.get("8,15,2");
+      const bottomVoxel = voxelAt.get("8,15,13");
+      expect(topVoxel?.paletteBlock.blockId).toBe("white_concrete");
+      expect(bottomVoxel?.paletteBlock.blockId).toBe("black_concrete");
+    });
+
+    it("is a no-op for a face with no internal variation, even when the palette is wide and sparse (nothing to stretch, regardless of what any other face of the same block looks like)", () => {
+      const sourceFaceTextures = uniformFaceTextures([100, 100, 100]); // every face flat
+      const wideSparsePalette = [
+        paletteBlock("black_concrete", [0, 0, 0]),
+        paletteBlock("gray_concrete", [128, 128, 128]),
+        paletteBlock("white_concrete", [255, 255, 255]),
+      ];
+      const voxels = buildVoxelGrid({
+        edgeBlocks: 8,
+        fillStyle: "solid-full",
+        sourceFaceTextures,
+        palette: wideSparsePalette,
+      });
+      // A flat [100,100,100] source, unstretched, nearest-matches
+      // gray_concrete (128) over black (0) or white (255) — if every
+      // voxel agrees on that, nothing dragged this flat texture toward
+      // an extreme.
+      expect(voxels.every((v) => v.paletteBlock.blockId === "gray_concrete")).toBe(true);
+    });
+  });
+});
+
+describe("assessReplicaContrastHeadroom", () => {
+  it("is not palette-limited when the source's own contrast fits inside the palette's reach", () => {
+    const sourceFaceTextures = uniformFaceTextures([100, 100, 100]);
+    sourceFaceTextures.up = verticallyStripedTexture(16, [130, 130, 130], [100, 100, 100]);
+    const palette = [paletteBlock("black_concrete", [0, 0, 0]), paletteBlock("white_concrete", [255, 255, 255])];
+    expect(assessReplicaContrastHeadroom(sourceFaceTextures, palette).isPaletteLimited).toBe(false);
+  });
+
+  it("is palette-limited when a face's own contrast outstrips every enabled block", () => {
+    const sourceFaceTextures = uniformFaceTextures([100, 100, 100]);
+    sourceFaceTextures.up = verticallyStripedTexture(16, [255, 255, 255], [0, 0, 0]); // full black-to-white range
+    const palette = [paletteBlock("gray_concrete", [120, 120, 120]), paletteBlock("gray_concrete_2", [136, 136, 136])];
+    expect(assessReplicaContrastHeadroom(sourceFaceTextures, palette).isPaletteLimited).toBe(true);
   });
 });

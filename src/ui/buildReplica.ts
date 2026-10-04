@@ -21,7 +21,8 @@ import { CUBE_FACE_DIRECTIONS, type CubeFaceDirection } from "../domain/faces.ts
 import { consolidateVoxels } from "../domain/consolidate.ts";
 import { buildMaterialList, type MaterialListEntry } from "../domain/materials.ts";
 import type { PaletteBlock } from "../domain/palette.ts";
-import { buildVoxelGrid, type DitherOptions, type FillStyle, type Voxel } from "../domain/shell.ts";
+import type { ContrastHeadroom } from "../domain/contrast.ts";
+import { assessReplicaContrastHeadroom, buildVoxelGrid, type DitherOptions, type FillStyle, type Voxel } from "../domain/shell.ts";
 import { schematicFileName, writeSchematicBytes } from "../litematic/writeSchematic.ts";
 
 export interface BuildReplicaParams {
@@ -54,6 +55,8 @@ export interface BuildReplicaResult {
   readonly interiorFillBlockId: string | null;
   /** How much `maxDistinctBlocks` simplified this build — `null` when no cap was requested, or the build was already at or under it (a genuine no-op, not worth mentioning). See `domain/consolidate.ts`. */
   readonly consolidation: ConsolidationSummary | null;
+  /** Whether the source block's own contrast outstrips what the enabled palette can reach, even after `buildVoxelGrid`'s automatic per-face stretch — see `domain/contrast.ts`. Always present (every build has some answer to this), unlike `consolidation`: the UI decides whether `isPaletteLimited` is worth surfacing. */
+  readonly contrastHeadroom: ContrastHeadroom;
 }
 
 /** The parts of `domain/consolidate.ts`'s `ConsolidationResult` worth showing the user — its `voxels` are already this result's own top-level `voxels`, so repeating them here would just be a second, stale copy. */
@@ -269,5 +272,6 @@ export async function buildReplica(params: BuildReplicaParams): Promise<BuildRep
     usedBlockTextures,
     interiorFillBlockId: interiorFillBlock?.blockId ?? null,
     consolidation,
+    contrastHeadroom: assessReplicaContrastHeadroom(sourceFaceTextures, palette),
   };
 }

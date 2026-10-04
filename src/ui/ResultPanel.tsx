@@ -85,6 +85,14 @@ export function ResultPanel({ result, edgeBlocks }: ResultPanelProps) {
         against mistakes.
       </p>
 
+      {result.contrastHeadroom.isPaletteLimited && (
+        <p className="hint-text">
+          This texture's own light/dark contrast is wider than what your enabled blocks can reach — some detail
+          was necessarily flattened even after stretching it to use as much of your palette as possible.
+          Enabling more block categories above (precious, gravity, biome-tinted) would widen what's available.
+        </p>
+      )}
+
       {result.consolidation !== null && (
         <p className="hint-text">
           Capped at {result.consolidation.consolidatedBlockCount} of{" "}
