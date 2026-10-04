@@ -18,6 +18,7 @@ import {
 } from "../assets/modelResolver.ts";
 import { decodePngTexture, readPngWidth, type DecodedTexture } from "../assets/textureDecoder.ts";
 import { CUBE_FACE_DIRECTIONS, type CubeFaceDirection } from "../domain/faces.ts";
+import { consolidateVoxels } from "../domain/consolidate.ts";
 import { buildMaterialList, type MaterialListEntry } from "../domain/materials.ts";
 import type { PaletteBlock } from "../domain/palette.ts";
 import { buildVoxelGrid, type DitherOptions, type FillStyle, type Voxel } from "../domain/shell.ts";
@@ -36,6 +37,8 @@ export interface BuildReplicaParams {
   readonly varianceWeight?: number;
   /** Forwarded to `buildVoxelGrid` — see its doc comment. Omitted entirely disables dithering. */
   readonly dither?: DitherOptions;
+  /** Caps the number of distinct block types in the finished build — see `domain/consolidate.ts`'s `consolidateVoxels`. Omitted entirely disables the cap (every voxel keeps whatever block the matcher originally picked). */
+  readonly maxDistinctBlocks?: number;
 }
 
 export interface BuildReplicaResult {
@@ -49,6 +52,15 @@ export interface BuildReplicaResult {
   readonly usedBlockTextures: ReadonlyMap<string, DecodedTexture>;
   /** Which block was auto-picked for the invisible interior — see {@link pickInteriorFillBlock} — or `null` when `fillStyle` wasn't `"solid-cheap-core"`. Surfaced purely so the UI can tell the user what it chose; `materialList`'s own count for this block already reflects the choice either way. */
   readonly interiorFillBlockId: string | null;
+  /** How much `maxDistinctBlocks` simplified this build — `null` when no cap was requested, or the build was already at or under it (a genuine no-op, not worth mentioning). See `domain/consolidate.ts`. */
+  readonly consolidation: ConsolidationSummary | null;
+}
+
+/** The parts of `domain/consolidate.ts`'s `ConsolidationResult` worth showing the user — its `voxels` are already this result's own top-level `voxels`, so repeating them here would just be a second, stale copy. */
+export interface ConsolidationSummary {
+  readonly originalBlockCount: number;
+  readonly consolidatedBlockCount: number;
+  readonly averageColorErrorIntroduced: number;
 }
 
 /**
@@ -176,8 +188,17 @@ export function resolveSourceTexturePixelsPerSide(
  * blocks that passed this exact check once already).
  */
 export async function buildReplica(params: BuildReplicaParams): Promise<BuildReplicaResult> {
-  const { archive, sourceBlockId, sourceBlockOrientation, edgeBlocks, fillStyle, palette, varianceWeight, dither } =
-    params;
+  const {
+    archive,
+    sourceBlockId,
+    sourceBlockOrientation,
+    edgeBlocks,
+    fillStyle,
+    palette,
+    varianceWeight,
+    dither,
+    maxDistinctBlocks,
+  } = params;
 
   const model =
     sourceBlockOrientation === null
@@ -205,7 +226,7 @@ export async function buildReplica(params: BuildReplicaParams): Promise<BuildRep
 
   const interiorFillBlock = fillStyle === "solid-cheap-core" ? pickInteriorFillBlock(palette) : undefined;
 
-  const voxels = buildVoxelGrid({
+  const rawVoxels = buildVoxelGrid({
     edgeBlocks,
     fillStyle,
     sourceFaceTextures,
@@ -214,6 +235,21 @@ export async function buildReplica(params: BuildReplicaParams): Promise<BuildRep
     ...(dither !== undefined && { dither }),
     ...(interiorFillBlock !== undefined && { interiorFillBlock }),
   });
+
+  let voxels: readonly Voxel[] = rawVoxels;
+  let consolidation: ConsolidationSummary | null = null;
+  if (maxDistinctBlocks !== undefined) {
+    const result = consolidateVoxels(rawVoxels, maxDistinctBlocks);
+    voxels = result.voxels;
+    if (result.consolidatedBlockCount < result.originalBlockCount) {
+      consolidation = {
+        originalBlockCount: result.originalBlockCount,
+        consolidatedBlockCount: result.consolidatedBlockCount,
+        averageColorErrorIntroduced: result.averageColorErrorIntroduced,
+      };
+    }
+  }
+
   const materialList = buildMaterialList(voxels);
   const schematicBytes = writeSchematicBytes({ sourceBlockId, edgeBlocks, fillStyle, voxels });
   const fileName = schematicFileName(sourceBlockId, edgeBlocks);
@@ -232,5 +268,6 @@ export async function buildReplica(params: BuildReplicaParams): Promise<BuildRep
     sourceFaceTextures,
     usedBlockTextures,
     interiorFillBlockId: interiorFillBlock?.blockId ?? null,
+    consolidation,
   };
 }

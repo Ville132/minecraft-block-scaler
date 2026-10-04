@@ -17,7 +17,7 @@ import { ArchiveUploadStep } from "./ArchiveUploadStep.tsx";
 import { BlockPickerStep } from "./BlockPickerStep.tsx";
 import { buildReplica, resolveSourceTexturePixelsPerSide, type BuildReplicaResult } from "./buildReplica.ts";
 import { ResultPanel } from "./ResultPanel.tsx";
-import { ScaleAndOptionsStep } from "./ScaleAndOptionsStep.tsx";
+import { DEFAULT_MAX_DISTINCT_BLOCKS, ScaleAndOptionsStep } from "./ScaleAndOptionsStep.tsx";
 
 export function App() {
   const [archive, setArchive] = useState<MinecraftArchive | null>(null);
@@ -71,6 +71,8 @@ export function App() {
   const [varianceWeight, setVarianceWeight] = useState<number>(DEFAULT_VARIANCE_WEIGHT);
   /** Off by default — see `domain/dither.ts`'s header comment. */
   const [ditherEnabled, setDitherEnabled] = useState(false);
+  /** `null` means no cap — see `domain/consolidate.ts`. Defaults ON: nothing upstream limits distinct block count, and a cap at or above whatever a build would naturally use is a no-op, so defaulting it on costs nothing for a build that was already simple. */
+  const [maxDistinctBlocks, setMaxDistinctBlocks] = useState<number | null>(DEFAULT_MAX_DISTINCT_BLOCKS);
 
   const [isBuilding, setIsBuilding] = useState(false);
   const [buildError, setBuildError] = useState<string | null>(null);
@@ -152,6 +154,7 @@ export function App() {
         palette: fillPalette,
         varianceWeight,
         ...(ditherEnabled && { dither: { varianceWeight } }),
+        ...(maxDistinctBlocks !== null && { maxDistinctBlocks }),
       });
       setResult(built);
     } catch (cause) {
@@ -257,6 +260,11 @@ export function App() {
         ditherEnabled={ditherEnabled}
         onDitherEnabledChange={(enabled) => {
           setDitherEnabled(enabled);
+          setResult(null);
+        }}
+        maxDistinctBlocks={maxDistinctBlocks}
+        onMaxDistinctBlocksChange={(value) => {
+          setMaxDistinctBlocks(value);
           setResult(null);
         }}
       />

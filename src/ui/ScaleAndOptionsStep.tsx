@@ -17,6 +17,9 @@ export const VARIANCE_WEIGHT_CHOICES = [
   },
 ] as const;
 
+/** The default cap offered by the "limit distinct materials" control — the middle of BACKLOG.md 1.1's suggested 8-16 range. Purely a UI starting point; `domain/consolidate.ts` places no meaning on this specific number. */
+export const DEFAULT_MAX_DISTINCT_BLOCKS = 12;
+
 export interface ScaleAndOptionsStepProps {
   readonly isReady: boolean;
   /** The selected source block's REAL texture resolution (16 for vanilla; see `ui/buildReplica.ts`'s `resolveSourceTexturePixelsPerSide`) — sizes are classified against this, not a hardcoded assumption, so a non-vanilla resource pack still gets correctly "exact" vs "distorted" labels. */
@@ -30,6 +33,9 @@ export interface ScaleAndOptionsStepProps {
   /** Off by default — see `domain/dither.ts`'s header comment for the tradeoff this trades flat-but-off color for (a speckled look up close). */
   readonly ditherEnabled: boolean;
   readonly onDitherEnabledChange: (enabled: boolean) => void;
+  /** `null` means no cap — see `domain/consolidate.ts`'s `consolidateVoxels`. */
+  readonly maxDistinctBlocks: number | null;
+  readonly onMaxDistinctBlocksChange: (maxDistinctBlocks: number | null) => void;
 }
 
 const DEFAULT_MAX_EDGE = 128;
@@ -63,6 +69,8 @@ export function ScaleAndOptionsStep({
   onVarianceWeightChange,
   ditherEnabled,
   onDitherEnabledChange,
+  maxDistinctBlocks,
+  onMaxDistinctBlocksChange,
 }: ScaleAndOptionsStepProps) {
   const [customSizeText, setCustomSizeText] = useState("");
 
@@ -207,6 +215,33 @@ export function ScaleAndOptionsStep({
           />
           Smooth color blending (dithering)
         </label>
+      </div>
+
+      <div className="options-row" style={{ alignItems: "center" }}>
+        <label
+          className="checkbox"
+          title="Keeps only the N most-used blocks in the finished build and reassigns every voxel that used a dropped block to whichever surviving block is now closest in color. A build with dozens of distinct block types, many used only a handful of times, is hard to finish by hand — this trades a little color accuracy for far fewer materials to go find."
+        >
+          <input
+            type="checkbox"
+            checked={maxDistinctBlocks !== null}
+            onChange={(event) =>
+              onMaxDistinctBlocksChange(event.target.checked ? DEFAULT_MAX_DISTINCT_BLOCKS : null)
+            }
+          />
+          Limit distinct materials to
+        </label>
+        <input
+          type="number"
+          min={1}
+          disabled={maxDistinctBlocks === null}
+          value={maxDistinctBlocks ?? DEFAULT_MAX_DISTINCT_BLOCKS}
+          onChange={(event) => {
+            const parsed = Number.parseInt(event.target.value, 10);
+            if (Number.isInteger(parsed) && parsed > 0) onMaxDistinctBlocksChange(parsed);
+          }}
+          style={{ width: 60 }}
+        />
       </div>
     </section>
   );

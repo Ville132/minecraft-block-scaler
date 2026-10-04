@@ -33,6 +33,15 @@ export function ResultPanel({ result, edgeBlocks }: ResultPanelProps) {
         )}
       </p>
 
+      {result.consolidation !== null && (
+        <p className="hint-text">
+          Capped at {result.consolidation.consolidatedBlockCount} of{" "}
+          {result.consolidation.originalBlockCount} distinct blocks — voxels that lost their block were
+          reassigned to the closest survivor (average color shift: {result.consolidation.averageColorErrorIntroduced.toFixed(3)}
+          , in Oklab distance).
+        </p>
+      )}
+
       <div className="material-table-wrap">
         <table className="material-table">
           <thead>
