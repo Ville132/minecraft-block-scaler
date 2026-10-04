@@ -5,6 +5,7 @@ import type { AxisOrientation } from "../assets/modelResolver.ts";
 import {
   buildPalette,
   DEFAULT_PALETTE_OPTIONS,
+  isFlammableBlock,
   isWoodFamilyBlock,
   listAxisVariantBlocks,
   type PaletteBlock,
@@ -29,6 +30,8 @@ export function App() {
   const [isLoadingPalette, setIsLoadingPalette] = useState(false);
   /** Restricts FILL material to wood blocks only — unlike `paletteOptions`, this never hides a block from the "choose a block to scale" picker, only from what can be used to color it in. */
   const [onlyWoodFillMaterial, setOnlyWoodFillMaterial] = useState(false);
+  /** Excludes wool/hay/bookshelf/wood-family FILL material (same picker-vs-fill distinction as `onlyWoodFillMaterial`) — not a `paletteOptions` toggle because most axis-pillar SOURCE blocks (logs) are themselves flammable wood, so excluding flammable blocks archive-wide would also remove logs from the scale-source picker, which defeats scaling up a log at all. Off by default: wood/wool are often the best color match for a natural-looking source block, and most builds are nowhere near fire. */
+  const [avoidFlammableFillMaterial, setAvoidFlammableFillMaterial] = useState(false);
 
   // Axis-pillar blocks (stripped logs, plain "wood"/all-bark variants,
   // nether stems/hyphae, …) are just as usable as fill material as any
@@ -41,10 +44,10 @@ export function App() {
   const allFillCandidates = useMemo(() => [...palette, ...axisVariantBlocks], [palette, axisVariantBlocks]);
   const fillPalette = useMemo(
     () =>
-      onlyWoodFillMaterial
-        ? allFillCandidates.filter((block) => isWoodFamilyBlock(block.blockId))
-        : allFillCandidates,
-    [allFillCandidates, onlyWoodFillMaterial],
+      allFillCandidates
+        .filter((block) => !onlyWoodFillMaterial || isWoodFamilyBlock(block.blockId))
+        .filter((block) => !avoidFlammableFillMaterial || !isFlammableBlock(block.blockId)),
+    [allFillCandidates, onlyWoodFillMaterial, avoidFlammableFillMaterial],
   );
 
   const [sourceBlockId, setSourceBlockId] = useState<string | null>(null);
@@ -226,6 +229,11 @@ export function App() {
           setOnlyWoodFillMaterial(value);
           setResult(null);
         }}
+        avoidFlammableFillMaterial={avoidFlammableFillMaterial}
+        onAvoidFlammableFillMaterialChange={(value) => {
+          setAvoidFlammableFillMaterial(value);
+          setResult(null);
+        }}
       />
 
       <ScaleAndOptionsStep
@@ -261,11 +269,11 @@ export function App() {
         <button type="button" className="primary" disabled={!canBuild || isBuilding} onClick={handleBuild}>
           {isBuilding ? "Building…" : "Build replica"}
         </button>
-        {onlyWoodFillMaterial && palette.length > 0 && fillPalette.length === 0 && (
+        {(onlyWoodFillMaterial || avoidFlammableFillMaterial) && palette.length > 0 && fillPalette.length === 0 && (
           <p className="error-text">
-            "Only use wood blocks" left nothing to build with — your archive's wood blocks were already
-            excluded by one of the toggles above (or it has none at all). Try relaxing a toggle or turning
-            this one off.
+            "{onlyWoodFillMaterial ? "Only use wood blocks" : "Avoid flammable blocks"}" left nothing to build
+            with — your archive's matching blocks were already excluded by one of the toggles above (or it
+            has none at all). Try relaxing a toggle or turning this one off.
           </p>
         )}
         {buildError !== null && <p className="error-text">{buildError}</p>}

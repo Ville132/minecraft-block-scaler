@@ -17,7 +17,7 @@ import {
 import { schematicFileName, writeSchematicBytes } from "./writeSchematic.ts";
 
 function fakeBlock(blockId: string): PaletteBlock {
-  return { blockId, resourceLocation: `minecraft:${blockId}`, color: { L: 0.5, a: 0, b: 0 }, textureVariance: 0, costTier: "common" };
+  return { blockId, resourceLocation: `minecraft:${blockId}`, color: { L: 0.5, a: 0, b: 0 }, textureVariance: 0, costTier: "common", acquisitionCost: 0 };
 }
 
 function fakeBlockWithProperties(blockId: string, properties: Readonly<Record<string, string>>): PaletteBlock {

@@ -16,7 +16,7 @@ import {
 import { requiresScarceIngredient } from "../assets/recipes.ts";
 import { decodePngTexture, type DecodedTexture } from "../assets/textureDecoder.ts";
 import {
-  averageLinearRgb,
+  averageOklab,
   linearRgbToOklab,
   oklabDistanceSquared,
   rgb8ToLinearRgb,
@@ -34,6 +34,8 @@ export interface PaletteBlock {
   /** Mean squared Oklab distance of this block's own texture pixels from `color` — how visually "busy" the texture is, 0 for a perfectly flat one. See `color.ts`'s `findBestMatch`, which penalizes a noisy block by this amount when picking fill material. */
   readonly textureVariance: number;
   readonly costTier: CostTier;
+  /** See `color.ts`'s `ScoredCandidate.acquisitionCost` and `acquisitionCostOf` in this module. */
+  readonly acquisitionCost: number;
   /** The blockstate properties of the specific variant this block's appearance/geometry was resolved from (see `assets/modelResolver.ts`'s `resolveCanonicalVariantCubeModel`) — e.g. `{ facing: "north" }` for a glazed terracotta. Omitted entirely for a single-variant block or an axis-pillar block (the latter relies on a schematic's own default of `axis=y` — see `litematic/writeSchematic.ts`), both of which need no `Properties` tag written at all. */
   readonly properties?: Readonly<Record<string, string>>;
 }
@@ -72,6 +74,8 @@ const UNBUILDABLE_BLOCK_IDS: ReadonlySet<string> = new Set([
   "structure_void",
   "trial_spawner",
   "vault",
+  "budding_amethyst", // never drops even with silk touch, and grows a cluster out of every exposed face
+  "reinforced_deepslate", // creative/structure-only, no obtain method at all
   // Visually identical to their host block, but spawn silverfish when broken:
   "infested_stone",
   "infested_cobblestone",
@@ -86,11 +90,33 @@ const UNBUILDABLE_BLOCK_IDS: ReadonlySet<string> = new Set([
   "note_block",
   "target",
   "tnt",
-  // Hazardous to stand near or walk on at the scale this app builds:
+  // Hazardous to stand near, stand on, or walk through at the scale this app builds:
   "magma_block",
+  "powder_snow", // entities sink in and can freeze to death inside it
+  "respawn_anchor", // explodes if charged and activated outside the Nether
+  "sculk_catalyst", // silk-touch only to obtain; spreads sculk to nearby blocks when a mob dies near it
   // Alter player movement, breaking the shape of a static sculpture:
   "slime_block",
   "honey_block",
+  "packed_ice",
+  "blue_ice",
+  "soul_sand",
+  "mud",
+  // Appearance does not stay the look it had when picked — a poor choice
+  // for a build meant to stay looking like the source block:
+  "tube_coral_block",
+  "brain_coral_block",
+  "bubble_coral_block",
+  "fire_coral_block",
+  "horn_coral_block", // all five lose their color within seconds once out of water
+  "copper_block",
+  "exposed_copper",
+  "weathered_copper",
+  "oxidized_copper",
+  "cut_copper",
+  "exposed_cut_copper",
+  "weathered_cut_copper",
+  "oxidized_cut_copper", // oxidizes over real time unless waxed; the waxed_* equivalents are pixel-identical and stable, and remain available
 ]);
 
 /** Fall when unsupported — unsuitable for a free-floating or overhanging replica. Gated by `allowGravityBlocks`. */
@@ -100,22 +126,98 @@ const GRAVITY_BLOCK_IDS: ReadonlySet<string> = new Set([
   "gravel",
   "suspicious_sand",
   "suspicious_gravel",
+  "white_concrete_powder",
+  "orange_concrete_powder",
+  "magenta_concrete_powder",
+  "light_blue_concrete_powder",
+  "yellow_concrete_powder",
+  "lime_concrete_powder",
+  "pink_concrete_powder",
+  "gray_concrete_powder",
+  "light_gray_concrete_powder",
+  "cyan_concrete_powder",
+  "purple_concrete_powder",
+  "blue_concrete_powder",
+  "brown_concrete_powder",
+  "green_concrete_powder",
+  "red_concrete_powder",
+  "black_concrete_powder",
 ]);
 
-/** Real in-game color depends on the surrounding biome's tint, which a resource-pack texture alone cannot tell us. Gated by `allowBiomeTintedBlocks`. */
+/** Real in-game color depends on the surrounding biome's tint, which a resource-pack texture alone cannot tell us. Gated by `allowBiomeTintedBlocks`.
+ *
+ * NOTE: spruce, birch, and cherry leaves/foliage are deliberately NOT
+ * listed — Mojang special-cased all three to a fixed color specifically
+ * so they read the same regardless of biome (most notably cherry, to
+ * keep its blossom pink consistent). Everything still listed here
+ * (grass, oak/jungle/acacia/dark-oak/mangrove/azalea leaves) genuinely
+ * does take the surrounding biome's tint. Leaf textures are also
+ * typically semi-transparent in vanilla, so `opaqueTextureAverage`'s
+ * alpha check already excludes most of them regardless of this list —
+ * it only matters for a resource pack that overrides a leaf texture to
+ * be fully opaque. */
 const BIOME_TINTED_BLOCK_IDS: ReadonlySet<string> = new Set([
   "grass_block",
   "oak_leaves",
-  "spruce_leaves",
-  "birch_leaves",
   "jungle_leaves",
   "acacia_leaves",
   "dark_oak_leaves",
   "mangrove_leaves",
-  "cherry_leaves",
   "azalea_leaves",
   "flowering_azalea_leaves",
 ]);
+
+/**
+ * Catches fire from a nearby flame and burns away — wool is this
+ * palette's main source of saturated matte color, so this matters for
+ * anything built near lava, fire, or lightning. Non-wood only: every
+ * wood-family block (logs/wood/planks/stems/hyphae) is also flammable
+ * and is already covered by {@link isWoodFamilyBlock} — see
+ * {@link isFlammableBlock}.
+ *
+ * Deliberately NOT wired into {@link passesExclusionFilters} the way
+ * gravity/biome-tint are: axis-pillar blocks (logs) are overwhelmingly
+ * wood, so a default-excluded, archive-wide flammability filter would
+ * also remove every log from the SOURCE-block picker — the exact
+ * scenario this app was built around. `ui/App.tsx` instead applies
+ * {@link isFlammableBlock} as a fill-material-only filter, the same way
+ * it already does for `onlyWoodFillMaterial`, which never touches
+ * source-block eligibility either.
+ */
+const FLAMMABLE_BLOCK_IDS: ReadonlySet<string> = new Set([
+  "white_wool",
+  "orange_wool",
+  "magenta_wool",
+  "light_blue_wool",
+  "yellow_wool",
+  "lime_wool",
+  "pink_wool",
+  "gray_wool",
+  "light_gray_wool",
+  "cyan_wool",
+  "purple_wool",
+  "blue_wool",
+  "brown_wool",
+  "green_wool",
+  "red_wool",
+  "black_wool",
+  "hay_block",
+  "bookshelf",
+  "chiseled_bookshelf",
+  "dried_kelp_block",
+]);
+
+/** Always rendered at this block's own fixed light level regardless of which face a replica voxel sits on, so the texture's raw pixel color reads noticeably darker than the block actually looks in-game. Used to lift `representativeAppearance`'s resolved lightness for these specific blocks — see {@link buildPalette}. */
+const EMISSIVE_BLOCK_IDS: ReadonlySet<string> = new Set([
+  "glowstone",
+  "sea_lantern",
+  "shroomlight",
+  "ochre_froglight",
+  "verdant_froglight",
+  "pearlescent_froglight",
+]);
+/** How much to lift an emissive block's resolved Oklab lightness — modest and clamped to 1 rather than tuned to match any specific light level, since the point is "reads brighter than its texture," not an exact photometric match. */
+const EMISSIVE_LIGHTNESS_BOOST = 0.15;
 
 /**
  * Full cubes whose defining material is itself a precious resource — a
@@ -173,9 +275,43 @@ const EXTRA_WOOD_FAMILY_BLOCK_IDS: ReadonlySet<string> = new Set([
  * wouldn't include. Matching the suffix every wood-family block
  * actually uses means a new species just works, with nothing to update.
  */
+/** The one block the wood-family suffix pattern below matches by mistake: `mushroom_stem` ends in `_stem` but is stone-textured fungus flesh, not wood — nothing to do with the nether `crimson_stem`/`warped_stem` logs the pattern exists to catch. Checked before the pattern so the general, species-agnostic approach ({@link isWoodFamilyBlock}'s own doc comment) can stay general. */
+const NON_WOOD_BLOCK_IDS_MATCHING_WOOD_PATTERN: ReadonlySet<string> = new Set(["mushroom_stem"]);
+
 export function isWoodFamilyBlock(blockId: string): boolean {
+  if (NON_WOOD_BLOCK_IDS_MATCHING_WOOD_PATTERN.has(blockId)) return false;
   if (EXTRA_WOOD_FAMILY_BLOCK_IDS.has(blockId)) return true;
   return /^(stripped_)?[a-z]+(_[a-z]+)*_(log|wood|planks|stem|hyphae)$/.test(blockId);
+}
+
+export function isFlammableBlock(blockId: string): boolean {
+  return isWoodFamilyBlock(blockId) || FLAMMABLE_BLOCK_IDS.has(blockId);
+}
+
+/**
+ * Full cubes that are "common" cost tier but still meaningfully harder
+ * to gather in bulk than an ordinary block — not farmable or minable in
+ * quantity the way stone, wood, or wool are. Used only as a small
+ * tie-break in color matching (see `color.ts`'s `findBestMatch`), never
+ * as an exclusion: none of these are expensive enough to justify
+ * removing them from the palette outright, the way the `PRECIOUS_MATERIAL_BLOCK_IDS`
+ * tier does.
+ */
+const ELEVATED_COST_BLOCK_IDS: ReadonlySet<string> = new Set([
+  "amethyst_block",
+  "sponge",
+  "wet_sponge",
+  "prismarine",
+  "prismarine_bricks",
+  "dark_prismarine",
+  "sea_lantern",
+]);
+
+/** A small, unitless acquisition-cost score — see `ScoredCandidate.acquisitionCost` in `color.ts`. `costTierOf` already hard-excludes true "precious" blocks under `survivalFriendlyOnly`, so this only needs to rank the remaining, always-available blocks against each other. */
+export function acquisitionCostOf(blockId: string): number {
+  if (costTierOf(blockId) === "precious") return 2;
+  if (ELEVATED_COST_BLOCK_IDS.has(blockId)) return 1;
+  return 0;
 }
 
 /**
@@ -204,27 +340,21 @@ export type TextureDecoder = (pngBytes: Uint8Array) => Promise<DecodedTexture>;
 /** Below this alpha, a pixel is treated as genuinely translucent and disqualifies its texture. Short of 255 on purpose: real resource packs sometimes export a handful of pixels at 254/253 from lossy rounding in an otherwise fully opaque texture, which full-opacity-only would reject for no visible reason. */
 const OPAQUE_ALPHA_THRESHOLD = 250;
 
-interface TextureStatistics {
-  readonly mean: LinearRgb;
-  /** Every opaque pixel's own linear-light color — kept (not just summarized) so {@link representativeAppearance} can measure each pixel's spread around the block's FINAL color once every distinct texture's mean is known. */
-  readonly pixels: readonly LinearRgb[];
-}
-
 /**
- * One texture's pixel statistics, or `undefined` if the texture is
- * disqualified: animated (an `.mcmeta` file sits beside it), its
- * decoded pixels are not square (a strong sign of a stacked animation
- * filmstrip), or any pixel is not opaque enough (see
- * {@link OPAQUE_ALPHA_THRESHOLD}). Either case disqualifies the WHOLE
- * texture rather than averaging just the remaining pixels, since a
- * partial, unrepresentative average would be a worse match than simply
- * not offering the block at all.
+ * Every opaque pixel's own linear-light color for one texture, or
+ * `undefined` if the texture is disqualified: animated (an `.mcmeta`
+ * file sits beside it), its decoded pixels are not square (a strong
+ * sign of a stacked animation filmstrip), or any pixel is not opaque
+ * enough (see {@link OPAQUE_ALPHA_THRESHOLD}). Either case disqualifies
+ * the WHOLE texture rather than averaging just the remaining pixels,
+ * since a partial, unrepresentative average would be a worse match than
+ * simply not offering the block at all.
  */
-async function opaqueTextureStatistics(
+async function opaqueTexturePixels(
   archive: MinecraftArchive,
   textureId: string,
   decodeTexture: TextureDecoder,
-): Promise<TextureStatistics | undefined> {
+): Promise<readonly LinearRgb[] | undefined> {
   if (archive.getFile(textureMetaPath(textureId)) !== undefined) return undefined;
 
   const bytes = archive.getFile(texturePath(textureId));
@@ -245,7 +375,7 @@ async function opaqueTextureStatistics(
       }),
     );
   }
-  return { mean: averageLinearRgb(pixels), pixels };
+  return pixels;
 }
 
 export interface BlockAppearance {
@@ -257,17 +387,29 @@ export interface BlockAppearance {
  * A block's representative appearance: its color, plus how visually
  * busy its texture is around that color.
  *
- * `color` is the linear-light average across each of its DISTINCT face
- * textures (deduplicated by texture id, each counted once regardless of
- * how many of the 6 faces use it) — unchanged from this app's original
- * single-color representation. For the common case — a `cube_all`-style
- * block where all six faces share one texture — this is exactly that
- * texture's own average. Blocks whose faces use several different
- * textures (e.g. a distinct top texture) get an equal-weight average
- * across those distinct textures rather than one weighted by face
- * count; no candidate block this app ships exclusion rules for actually
- * has that shape, so the simplification is untested in practice but
- * documented here in case a resource pack introduces one.
+ * `color` is the Oklab average across each of its DISTINCT face textures
+ * (deduplicated by texture id, each counted once regardless of how many
+ * of the 6 faces use it) — each texture's own pixels are first converted
+ * to Oklab and averaged THERE (not averaged in linear light and then
+ * converted), so `color` is the true Oklab centroid of the block's own
+ * pixels. For the common case — a `cube_all`-style block where all six
+ * faces share one texture — this is exactly that texture's own Oklab
+ * average. Blocks whose faces use several different textures (e.g. a
+ * distinct top texture) get an equal-weight average across those
+ * distinct textures rather than one weighted by face count; no candidate
+ * block this app ships exclusion rules for actually has that shape, so
+ * the simplification is untested in practice but documented here in
+ * case a resource pack introduces one.
+ *
+ * Averaging directly in Oklab (rather than linear-light-then-convert)
+ * matters for `variance`: Oklab's cube-root nonlinearity means those two
+ * averages are different points, and only the true centroid makes
+ * `variance` (the mean squared distance from `color`) the actual
+ * variance `color.ts`'s `findBestMatch` assumes it is — see its own doc
+ * comment on the bias-variance decomposition. For a perfectly flat
+ * texture both methods agree exactly (every pixel is the same point
+ * either way), which is why this does not disturb any color pinned by a
+ * uniform-texture test.
  *
  * `variance` is the mean squared Oklab distance of every pixel of every
  * distinct texture from the block's own `color`, pooled with the same
@@ -284,22 +426,29 @@ async function representativeAppearance(
   decodeTexture: TextureDecoder,
 ): Promise<BlockAppearance | undefined> {
   const distinctTextureIds = new Set(Object.values(model.faceTextureIds));
-  const statsByTexture: TextureStatistics[] = [];
+  const pixelsByTexture: (readonly LinearRgb[])[] = [];
   for (const textureId of distinctTextureIds) {
-    const stats = await opaqueTextureStatistics(archive, textureId, decodeTexture);
-    if (stats === undefined) return undefined;
-    statsByTexture.push(stats);
+    const pixels = await opaqueTexturePixels(archive, textureId, decodeTexture);
+    if (pixels === undefined) return undefined;
+    pixelsByTexture.push(pixels);
   }
 
-  const color = linearRgbToOklab(averageLinearRgb(statsByTexture.map((stats) => stats.mean)));
+  const perTexturePixelOklabs = pixelsByTexture.map((pixels) => pixels.map((pixel) => linearRgbToOklab(pixel)));
+  const color = averageOklab(perTexturePixelOklabs.map((pixelOklabs) => averageOklab(pixelOklabs)));
 
-  const perTextureVariances = statsByTexture.map((stats) => {
-    const squaredDistances = stats.pixels.map((pixel) => oklabDistanceSquared(linearRgbToOklab(pixel), color));
+  const perTextureVariances = perTexturePixelOklabs.map((pixelOklabs) => {
+    const squaredDistances = pixelOklabs.map((pixelOklab) => oklabDistanceSquared(pixelOklab, color));
     return squaredDistances.reduce((sum, value) => sum + value, 0) / squaredDistances.length;
   });
   const variance = perTextureVariances.reduce((sum, value) => sum + value, 0) / perTextureVariances.length;
 
   return { color, variance };
+}
+
+/** Lifts an emissive block's resolved lightness — see {@link EMISSIVE_BLOCK_IDS}. A no-op for every other block. */
+function applyEmissiveBoost(blockId: string, color: Oklab): Oklab {
+  if (!EMISSIVE_BLOCK_IDS.has(blockId)) return color;
+  return { ...color, L: Math.min(1, color.L + EMISSIVE_LIGHTNESS_BOOST) };
 }
 
 /**
@@ -342,9 +491,10 @@ export async function buildPalette(
     paletteBlocks.push({
       blockId,
       resourceLocation: `minecraft:${blockId}`,
-      color: appearance.color,
+      color: applyEmissiveBoost(blockId, appearance.color),
       textureVariance: appearance.variance,
       costTier: costTierOf(blockId),
+      acquisitionCost: acquisitionCostOf(blockId),
       ...(Object.keys(canonicalVariant.properties).length > 0 && { properties: canonicalVariant.properties }),
     });
   }
@@ -390,9 +540,10 @@ export async function listAxisVariantBlocks(
     blocks.push({
       blockId,
       resourceLocation: `minecraft:${blockId}`,
-      color: appearance.color,
+      color: applyEmissiveBoost(blockId, appearance.color),
       textureVariance: appearance.variance,
       costTier: costTierOf(blockId),
+      acquisitionCost: acquisitionCostOf(blockId),
     });
   }
 

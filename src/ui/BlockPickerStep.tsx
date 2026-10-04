@@ -19,6 +19,9 @@ export interface BlockPickerStepProps {
   /** Restricts fill material to wood blocks only — unlike `options`, never hides a block from this picker, only from what can be used to color the build. */
   readonly onlyWoodFillMaterial: boolean;
   readonly onOnlyWoodFillMaterialChange: (value: boolean) => void;
+  /** Excludes wool/hay/bookshelf/wood-family fill material (catches fire) — same picker-vs-fill distinction as `onlyWoodFillMaterial`. */
+  readonly avoidFlammableFillMaterial: boolean;
+  readonly onAvoidFlammableFillMaterialChange: (value: boolean) => void;
 }
 
 /**
@@ -43,6 +46,8 @@ export function BlockPickerStep({
   onOrientationChange,
   onlyWoodFillMaterial,
   onOnlyWoodFillMaterialChange,
+  avoidFlammableFillMaterial,
+  onAvoidFlammableFillMaterialChange,
 }: BlockPickerStepProps) {
   const [search, setSearch] = useState("");
 
@@ -165,6 +170,14 @@ export function BlockPickerStep({
                 onChange={(event) => onOnlyWoodFillMaterialChange(event.target.checked)}
               />
               Only use wood as fill material (logs, wood, planks — any species)
+            </label>
+            <label className="checkbox" title="Excludes wool, hay, bookshelves, and wood-family blocks from fill material — they catch fire from a nearby flame.">
+              <input
+                type="checkbox"
+                checked={avoidFlammableFillMaterial}
+                onChange={(event) => onAvoidFlammableFillMaterialChange(event.target.checked)}
+              />
+              Avoid flammable fill material (wool, hay, wood — catches fire near lava or lightning)
             </label>
           </div>
         </>

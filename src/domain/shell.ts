@@ -343,7 +343,7 @@ interface DitheredFaceGrid {
 function buildDitheredFaceGrid(
   texture: DecodedTexture,
   edgeBlocks: number,
-  paletteCandidates: readonly { color: Oklab; variance: number; item: PaletteBlock }[],
+  paletteCandidates: readonly { color: Oklab; variance: number; acquisitionCost: number; item: PaletteBlock }[],
   dither: DitherOptions,
 ): DitheredFaceGrid {
   const uRegions = distinctPixelRegions(edgeBlocks, texture.width);
@@ -407,6 +407,7 @@ export function buildVoxelGrid(params: BuildVoxelGridParams): Voxel[] {
   const paletteCandidates = palette.map((block) => ({
     color: block.color,
     variance: block.textureVariance,
+    acquisitionCost: block.acquisitionCost,
     item: block,
   }));
 

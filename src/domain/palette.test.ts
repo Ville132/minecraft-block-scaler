@@ -4,9 +4,11 @@ import { readMinecraftArchive, type MinecraftArchive } from "../assets/archiveRe
 import type { DecodedTexture } from "../assets/textureDecoder.ts";
 import { oklabDistanceSquared, rgb8ToOklab } from "./color.ts";
 import {
+  acquisitionCostOf,
   buildPalette,
   costTierOf,
   isBiomeTintedBlock,
+  isFlammableBlock,
   isGravityBlock,
   isUnbuildableBlock,
   isWoodFamilyBlock,
@@ -64,6 +66,33 @@ describe("classification rules", () => {
     expect(isWoodFamilyBlock("redstone_block")).toBe(false);
     expect(isWoodFamilyBlock("note_block")).toBe(false);
     expect(isWoodFamilyBlock("bookshelf")).toBe(false);
+  });
+
+  it("does not flag mushroom_stem as wood, despite ending in the same '_stem' suffix nether stems use", () => {
+    expect(isWoodFamilyBlock("mushroom_stem")).toBe(false);
+    // The nether stems the pattern exists to catch are unaffected.
+    expect(isWoodFamilyBlock("crimson_stem")).toBe(true);
+    expect(isWoodFamilyBlock("warped_stem")).toBe(true);
+  });
+
+  it("flags flammable blocks: wool, the small non-wood set, and (via isWoodFamilyBlock) every wood-family block", () => {
+    expect(isFlammableBlock("white_wool")).toBe(true);
+    expect(isFlammableBlock("black_wool")).toBe(true);
+    expect(isFlammableBlock("hay_block")).toBe(true);
+    expect(isFlammableBlock("bookshelf")).toBe(true);
+    expect(isFlammableBlock("oak_log")).toBe(true); // via isWoodFamilyBlock
+    expect(isFlammableBlock("oak_planks")).toBe(true);
+    expect(isFlammableBlock("cobblestone")).toBe(false);
+    expect(isFlammableBlock("stone")).toBe(false);
+  });
+
+  it("scores acquisition cost: 0 for ordinary blocks, 1 for elevated-but-common, 2 for precious tier", () => {
+    expect(acquisitionCostOf("cobblestone")).toBe(0);
+    expect(acquisitionCostOf("oak_planks")).toBe(0);
+    expect(acquisitionCostOf("amethyst_block")).toBe(1);
+    expect(acquisitionCostOf("sea_lantern")).toBe(1);
+    expect(acquisitionCostOf("gold_block")).toBe(2);
+    expect(acquisitionCostOf("diamond_block")).toBe(2);
   });
 });
 
@@ -283,6 +312,56 @@ describe("buildPalette", () => {
     expect(palette.map((block) => block.blockId)).not.toContain("barrier");
   });
 
+  it("excludes a concrete powder by default (gravity) but re-includes it when allowGravityBlocks is set", async () => {
+    const archive = archiveOf(cubeAllBlockFiles("red_concrete_powder", "GRAY"));
+    const excluded = await buildPalette(archive, undefined, fakeDecodeTexture);
+    expect(excluded.map((block) => block.blockId)).not.toContain("red_concrete_powder");
+
+    const included = await buildPalette(
+      archive,
+      { survivalFriendlyOnly: true, allowGravityBlocks: true, allowBiomeTintedBlocks: false },
+      fakeDecodeTexture,
+    );
+    expect(included.map((block) => block.blockId)).toContain("red_concrete_powder");
+  });
+
+  it("unconditionally excludes coral (loses its color out of water) and unwaxed copper (oxidizes), with no toggle to re-include either", async () => {
+    const archive = archiveOf({
+      ...cubeAllBlockFiles("tube_coral_block", "GRAY"),
+      ...cubeAllBlockFiles("copper_block", "GRAY"),
+      ...cubeAllBlockFiles("waxed_copper_block", "GRAY"), // the stable equivalent: stays available
+    });
+    const palette = await buildPalette(
+      archive,
+      { survivalFriendlyOnly: false, allowGravityBlocks: true, allowBiomeTintedBlocks: true },
+      fakeDecodeTexture,
+    );
+    const blockIds = palette.map((block) => block.blockId);
+    expect(blockIds).not.toContain("tube_coral_block");
+    expect(blockIds).not.toContain("copper_block");
+    expect(blockIds).toContain("waxed_copper_block");
+  });
+
+  it("lifts an emissive block's resolved lightness above its own flat texture color", async () => {
+    const archive = archiveOf(cubeAllBlockFiles("glowstone", "YELLOW"));
+    const palette = await buildPalette(archive, undefined, fakeDecodeTexture);
+    const glowstone = palette.find((block) => block.blockId === "glowstone");
+    expect(glowstone).toBeDefined();
+    expect(glowstone!.color.L).toBeGreaterThan(rgb8ToOklab({ r: 255, g: 215, b: 0 }).L);
+  });
+
+  it("carries each block's acquisitionCost through to the output", async () => {
+    const palette = await buildPalette(
+      testArchive(),
+      { survivalFriendlyOnly: false, allowGravityBlocks: false, allowBiomeTintedBlocks: false },
+      fakeDecodeTexture,
+    );
+    const cobblestone = palette.find((block) => block.blockId === "cobblestone");
+    const goldBlock = palette.find((block) => block.blockId === "gold_block");
+    expect(cobblestone?.acquisitionCost).toBe(0);
+    expect(goldBlock?.acquisitionCost).toBe(2);
+  });
+
   it("averages multiple distinct face textures rather than using just one", async () => {
     const archive = archiveOf({
       "assets/minecraft/blockstates/two_tone.json": {
@@ -324,23 +403,26 @@ describe("buildPalette", () => {
     expect(cobblestone?.textureVariance).toBe(0);
   });
 
-  it("gives a busy (half-black, half-white) texture positive texture variance, averaging each pixel's own squared distance from the texture's mean color", async () => {
+  it("gives a busy (half-black, half-white) texture positive texture variance, with the mean now the TRUE Oklab centroid of its own pixels", async () => {
     const archive = archiveOf(cubeAllBlockFiles("noisy_thing", "BLACK_WHITE_SPLIT"));
     const palette = await buildPalette(archive, undefined, fakeDecodeTexture);
     const noisyThing = palette.find((block) => block.blockId === "noisy_thing");
     expect(noisyThing).toBeDefined();
     expect(noisyThing!.textureVariance).toBeGreaterThan(0);
 
-    // Every pixel is pure black or pure white in equal numbers, so the
-    // variance is the mean of each pure color's own squared distance
-    // from the texture's mean — NOT the same single number for both:
-    // the mean is the Oklab conversion of the LINEAR-light average of
-    // black and white, and Oklab's cube-root nonlinearity means that
-    // point sits closer to white than to black, not halfway between.
+    // Every pixel is pure black or pure white in equal numbers. `color`
+    // is computed by averaging each pixel's own Oklab coordinates
+    // DIRECTLY (not by averaging in linear light and converting the
+    // result afterward, which Oklab's cube-root nonlinearity would pull
+    // closer to white than black — the bug an earlier version of this
+    // test actually pinned). Averaging directly in Oklab makes black and
+    // white exactly equidistant from the result by construction, so the
+    // variance is exactly that one shared squared distance, not a blend
+    // of two different ones.
     const blackDistanceSquared = oklabDistanceSquared(rgb8ToOklab({ r: 0, g: 0, b: 0 }), noisyThing!.color);
     const whiteDistanceSquared = oklabDistanceSquared(rgb8ToOklab({ r: 255, g: 255, b: 255 }), noisyThing!.color);
-    expect(blackDistanceSquared).not.toBeCloseTo(whiteDistanceSquared, 2); // the nonlinearity, made explicit
-    expect(noisyThing!.textureVariance).toBeCloseTo((blackDistanceSquared + whiteDistanceSquared) / 2, 10);
+    expect(blackDistanceSquared).toBeCloseTo(whiteDistanceSquared, 6);
+    expect(noisyThing!.textureVariance).toBeCloseTo(blackDistanceSquared, 10);
   });
 
   it("accepts a texture with slightly-less-than-fully-opaque pixels (resource-pack rounding), unlike a genuinely translucent one", async () => {

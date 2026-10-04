@@ -164,7 +164,7 @@ function verticallyStripedTexture(
 }
 
 function paletteBlock(blockId: string, rgb: readonly [number, number, number]): PaletteBlock {
-  return { blockId, resourceLocation: `minecraft:${blockId}`, color: rgb8ToOklab({ r: rgb[0], g: rgb[1], b: rgb[2] }), textureVariance: 0, costTier: "common" };
+  return { blockId, resourceLocation: `minecraft:${blockId}`, color: rgb8ToOklab({ r: rgb[0], g: rgb[1], b: rgb[2] }), textureVariance: 0, costTier: "common", acquisitionCost: 0 };
 }
 
 const RED: readonly [number, number, number] = [255, 0, 0];
@@ -224,6 +224,7 @@ describe("buildVoxelGrid", () => {
       color: rgb8ToOklab({ r: RED[0], g: RED[1], b: RED[2] }), // perfect color match
       textureVariance: 0.05, // but a visually busy texture
       costTier: "common",
+      acquisitionCost: 0,
     };
     const closeButFlat: PaletteBlock = {
       blockId: "flat_offred_wool",
@@ -231,6 +232,7 @@ describe("buildVoxelGrid", () => {
       color: rgb8ToOklab({ r: 235, g: 20, b: 20 }), // slightly off red, not exact
       textureVariance: 0,
       costTier: "common",
+      acquisitionCost: 0,
     };
     const palette = [exactButNoisy, closeButFlat];
 
@@ -312,6 +314,7 @@ describe("buildVoxelGrid", () => {
       color: linearRgbToOklab(blendedLinear),
       textureVariance: 0,
       costTier: "common",
+      acquisitionCost: 0,
     };
     const palette = [...PALETTE, blendBlock];
 
@@ -413,6 +416,7 @@ describe("buildVoxelGrid", () => {
         color: linearRgbToOklab(blendedLinear),
         textureVariance: 0,
         costTier: "common",
+        acquisitionCost: 0,
       };
       const palette = [...PALETTE, blendBlock];
 

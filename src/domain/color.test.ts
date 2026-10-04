@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   averageLinearRgb,
+  averageOklab,
   findBestMatch,
   findNearestOklab,
   linearRgbToOklab,
@@ -12,6 +13,7 @@ import {
   rgb8ToLinearRgb,
   srgbToLinearChannel,
   type LinearRgb,
+  type Oklab,
   type Rgb8,
 } from "./color.ts";
 
@@ -83,6 +85,34 @@ describe("averageLinearRgb", () => {
     // average is substantially brighter than that.
     expect(averaged.r).toBeGreaterThan(160);
     expect(averaged.r).toBeCloseTo(188, -1);
+  });
+});
+
+describe("averageOklab", () => {
+  it("averages per channel", () => {
+    const result = averageOklab([
+      { L: 0, a: 0.2, b: 1 },
+      { L: 1, a: 0.2, b: 0 },
+    ]);
+    expect(result).toEqual({ L: 0.5, a: 0.2, b: 0.5 });
+  });
+
+  it("throws on an empty sample list rather than returning a meaningless default", () => {
+    expect(() => averageOklab([])).toThrow(RangeError);
+  });
+
+  it("differs from converting the linear-light average, for black and white specifically — the whole point of this function existing (see palette.ts's representativeAppearance)", () => {
+    const black: Oklab = linearRgbToOklab({ r: 0, g: 0, b: 0 });
+    const white: Oklab = linearRgbToOklab({ r: 1, g: 1, b: 1 });
+    const oklabAverage = averageOklab([black, white]);
+    const linearLightAverage = linearRgbToOklab(averageLinearRgb([{ r: 0, g: 0, b: 0 }, { r: 1, g: 1, b: 1 }]));
+    // Averaging directly in Oklab gives the exact midpoint (L=0.5, up
+    // to the same floating-point tolerance linearRgbToOklab's own
+    // "maps white to L=1" test uses); averaging in linear light first
+    // and converting afterward does not, because of Oklab's cube-root
+    // nonlinearity.
+    expect(oklabAverage.L).toBeCloseTo(0.5, 7);
+    expect(oklabAverage.L).not.toBeCloseTo(linearLightAverage.L, 2);
   });
 });
 
@@ -197,5 +227,35 @@ describe("findBestMatch", () => {
 
   it("throws on an empty candidate list rather than returning a meaningless match", () => {
     expect(() => findBestMatch(target, [], 1)).toThrow(RangeError);
+  });
+
+  describe("acquisitionCost tie-break", () => {
+    // Two candidates with the IDENTICAL color and variance, differing
+    // only in acquisitionCost — isolates the cost term from everything
+    // else findBestMatch scores on.
+    const cheap = { color: { L: 0.5, a: 0, b: 0 }, variance: 0, acquisitionCost: 0, item: "cheap" };
+    const costly = { color: { L: 0.5, a: 0, b: 0 }, variance: 0, acquisitionCost: 2, item: "costly" };
+
+    it("prefers the cheaper candidate when colors tie exactly", () => {
+      expect(findBestMatch(target, [costly, cheap], 0, 0.001)).toBe("cheap");
+    });
+
+    it("a candidate with no acquisitionCost field is treated as cost 0, same as an explicit 0", () => {
+      const noCostField = { color: { L: 0.5, a: 0, b: 0 }, variance: 0, item: "no_cost_field" };
+      expect(findBestMatch(target, [costly, noCostField], 0, 0.001)).toBe("no_cost_field");
+    });
+
+    it("costWeight 0 ignores acquisitionCost entirely, keeping the first-listed candidate on a full tie", () => {
+      expect(findBestMatch(target, [costly, cheap], 0, 0)).toBe("costly");
+    });
+
+    it("never lets a cost difference override a real, clearly-better color match (the default weight is deliberately tiny)", () => {
+      // "nearExact" is a hair off target but far cheaper than "exact";
+      // at the principled default cost weight, color accuracy still wins.
+      const exact = { color: { L: 0.5, a: 0, b: 0 }, variance: 0, acquisitionCost: 2, item: "exact" };
+      const nearExact = { color: { L: 0.6, a: 0, b: 0 }, variance: 0, acquisitionCost: 0, item: "near_exact" };
+      // costWeight omitted -> DEFAULT_COST_WEIGHT, the same default the real app uses.
+      expect(findBestMatch(target, [exact, nearExact], 0)).toBe("exact");
+    });
   });
 });

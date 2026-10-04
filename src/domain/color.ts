@@ -98,6 +98,22 @@ export function averageLinearRgb(samples: readonly LinearRgb[]): LinearRgb {
   return { r: rSum / samples.length, g: gSum / samples.length, b: bSum / samples.length };
 }
 
+/** The mean of Oklab samples, per channel — averaging directly within Oklab space rather than averaging in linear light and converting the result, which (because of Oklab's cube-root nonlinearity) is a different point. See `palette.ts`'s `representativeAppearance` for why that distinction matters. Throws on an empty input, for the same reason as {@link averageLinearRgb}. */
+export function averageOklab(samples: readonly Oklab[]): Oklab {
+  if (samples.length === 0) {
+    throw new RangeError("averageOklab requires at least one sample");
+  }
+  let lSum = 0;
+  let aSum = 0;
+  let bSum = 0;
+  for (const sample of samples) {
+    lSum += sample.L;
+    aSum += sample.a;
+    bSum += sample.b;
+  }
+  return { L: lSum / samples.length, a: aSum / samples.length, b: bSum / samples.length };
+}
+
 export function linearRgbToOklab(linear: LinearRgb): Oklab {
   const l = 0.4122214708 * linear.r + 0.5363325363 * linear.g + 0.0514459929 * linear.b;
   const m = 0.2119034982 * linear.r + 0.6806995451 * linear.g + 0.1073969566 * linear.b;
@@ -158,30 +174,39 @@ export interface ScoredCandidate<T> {
   readonly color: Oklab;
   /** Mean squared Oklab distance of this candidate's own texture pixels from its `color` — how visually "busy" it is. 0 for a perfectly flat texture. */
   readonly variance: number;
+  /** A small, unitless acquisition-cost score — how much harder this candidate is to gather at the scale of a real build, relative to an ordinary block (0). Only ever meant to break a near-tie between two otherwise-similar colors (see `findBestMatch`'s `costWeight`), never to override a real color difference. Omitted (treated as 0) by every caller that has no concept of cost. */
+  readonly acquisitionCost?: number;
   readonly item: T;
 }
 
+/** `findBestMatch`'s default `costWeight` — small enough that it only ever decides a near-tie: two candidates need to be within roughly 0.03 of Oklab distance (an already close color match) before a cost difference of 1 can flip the result, since `0.03^2 * 1 ≈ costWeight`. Not derived from a formula the way `DEFAULT_VARIANCE_WEIGHT` is — there is no equivalent decomposition for "how much should gathering effort count against a color match" — so this is a deliberately conservative hand-picked constant, not a principled one. */
+export const DEFAULT_COST_WEIGHT = 0.001;
+
 /**
  * Finds the candidate that best stands in for `target`, accounting for
- * both color accuracy AND how visually busy the candidate's own
- * texture is.
+ * color accuracy, how visually busy the candidate's own texture is, and
+ * (as a near-tie-breaker only) how costly it is to gather.
  *
- * The scoring falls directly out of the bias-variance decomposition of
- * expected squared error: if a candidate `B` is used to represent
- * `target`, the expected squared perceptual error of a random pixel of
- * `B` is `|mean(B) - target|^2 + Var(B)` — the color miss, plus the
- * candidate's own noise around its mean. Minimizing that sum is exactly
- * `oklabDistanceSquared(candidate.color, target) + varianceWeight * candidate.variance`.
- * `varianceWeight` scales how much the second term counts: `0`
+ * The color+variance half of the scoring falls directly out of the
+ * bias-variance decomposition of expected squared error: if a candidate
+ * `B` is used to represent `target`, the expected squared perceptual
+ * error of a random pixel of `B` is `|mean(B) - target|^2 + Var(B)` —
+ * the color miss, plus the candidate's own noise around its mean.
+ * `varianceWeight` scales how much the variance term counts: `0`
  * reproduces plain nearest-color matching (a noisy block is just as
  * eligible as a flat one with the same mean); `1` is the literal,
- * unscaled expected-error sum: how much the candidate would actually be
- * expected to blur or mis-color a single pixel it's standing in for, no
- * extra weighting added. Higher values increasingly prefer flat blocks
- * over busy ones even at a worse color match.
+ * unscaled expected-error sum. Higher values increasingly prefer flat
+ * blocks over busy ones even at a worse color match.
+ *
+ * `costWeight` scales `acquisitionCost` the same way, but unlike
+ * variance there is no error-decomposition justification for any
+ * particular value — it exists purely to prefer the cheaper of two
+ * near-identical colors, never to meaningfully outweigh accuracy. See
+ * {@link DEFAULT_COST_WEIGHT}.
  *
  * Inputs: `target`, the color to match; `candidates`, each paired with
- * the item it should resolve to if best; `varianceWeight`, see above.
+ * the item it should resolve to if best; `varianceWeight`; `costWeight`
+ * (defaults to {@link DEFAULT_COST_WEIGHT}).
  * Output: the best candidate's `item`.
  * Failure mode: throws `RangeError` on an empty candidate list, rather
  * than returning a meaningless default match.
@@ -190,15 +215,21 @@ export function findBestMatch<T>(
   target: Oklab,
   candidates: readonly ScoredCandidate<T>[],
   varianceWeight: number,
+  costWeight: number = DEFAULT_COST_WEIGHT,
 ): T {
   if (candidates.length === 0) {
     throw new RangeError("findBestMatch requires at least one candidate");
   }
+  const costOf = (candidate: ScoredCandidate<T>): number =>
+    oklabDistanceSquared(target, candidate.color) +
+    varianceWeight * candidate.variance +
+    costWeight * (candidate.acquisitionCost ?? 0);
+
   let best = candidates[0]!;
-  let bestCost = oklabDistanceSquared(target, best.color) + varianceWeight * best.variance;
+  let bestCost = costOf(best);
   for (let i = 1; i < candidates.length; i++) {
     const candidate = candidates[i]!;
-    const cost = oklabDistanceSquared(target, candidate.color) + varianceWeight * candidate.variance;
+    const cost = costOf(candidate);
     if (cost < bestCost) {
       best = candidate;
       bestCost = cost;
