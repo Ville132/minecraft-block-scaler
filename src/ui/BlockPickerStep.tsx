@@ -90,7 +90,7 @@ export function BlockPickerStep({
                   className="block-tile"
                   data-selected={block.blockId === selectedBlockId}
                   onClick={() => onSelectBlock(block.blockId)}
-                  title={block.resourceLocation}
+                  title={`${block.resourceLocation} · texture variance ${block.textureVariance.toFixed(4)} (how busy/noisy its texture is — a flatter texture, lower here, is a cleaner stand-in for a solid color; see the "prefer clean textures" option in step 3)`}
                 >
                   <span className="swatch" style={{ background: swatchColor(block.color) }} />
                   <span className="label">{block.blockId}</span>

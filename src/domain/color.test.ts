@@ -1,11 +1,13 @@
 import { describe, expect, it } from "vitest";
 import {
   averageLinearRgb,
+  findBestMatch,
   findNearestOklab,
   linearRgbToOklab,
   linearRgbToRgb8,
   linearToSrgbChannel,
   oklabDistance,
+  oklabDistanceSquared,
   oklabToLinearRgb,
   rgb8ToLinearRgb,
   srgbToLinearChannel,
@@ -148,5 +150,52 @@ describe("findNearestOklab", () => {
 
   it("throws on an empty candidate list rather than returning a meaningless match", () => {
     expect(() => findNearestOklab({ L: 0.5, a: 0, b: 0 }, [])).toThrow(RangeError);
+  });
+});
+
+describe("oklabDistanceSquared", () => {
+  it("is the square of oklabDistance", () => {
+    const a = { L: 0, a: 0, b: 0 };
+    const b = { L: 0, a: 3, b: 4 };
+    expect(oklabDistanceSquared(a, b)).toBeCloseTo(25, 10); // 3-4-5 triangle
+    expect(oklabDistanceSquared(a, b)).toBeCloseTo(oklabDistance(a, b) ** 2, 10);
+  });
+
+  it("is zero for identical colors", () => {
+    const color = { L: 0.5, a: 0.1, b: -0.1 };
+    expect(oklabDistanceSquared(color, color)).toBe(0);
+  });
+});
+
+describe("findBestMatch", () => {
+  const target = { L: 0.5, a: 0, b: 0 };
+  // Hand-computed costs at target (L=0.5,a=0,b=0):
+  //   noisyNear: color (L=0.52) -> distanceSquared = 0.02^2 = 0.0004; variance 0.01
+  //     cost(weight=0) = 0.0004            cost(weight=1) = 0.0104
+  //   flatFar:   color (L=0.6)  -> distanceSquared = 0.1^2  = 0.01;   variance 0
+  //     cost(weight=0) = 0.01              cost(weight=1) = 0.01
+  const noisyNear = { color: { L: 0.52, a: 0, b: 0 }, variance: 0.01, item: "noisy_near" };
+  const flatFar = { color: { L: 0.6, a: 0, b: 0 }, variance: 0, item: "flat_far" };
+
+  it("at weight 0, the nearer candidate wins regardless of its own noise (pure color match)", () => {
+    expect(findBestMatch(target, [noisyNear, flatFar], 0)).toBe("noisy_near");
+  });
+
+  it("at weight 1, a flatter-but-farther candidate can outscore a closer-but-noisier one", () => {
+    // 0.0004 + 1*0.01 = 0.0104  >  0.01 + 1*0 = 0.01 -> flatFar wins
+    expect(findBestMatch(target, [noisyNear, flatFar], 1)).toBe("flat_far");
+  });
+
+  it("two equally-colored candidates break the tie toward the flatter one once variance is weighted", () => {
+    const flat = { color: { L: 0.7, a: 0, b: 0 }, variance: 0, item: "flat" };
+    const noisySameColor = { color: { L: 0.7, a: 0, b: 0 }, variance: 0.02, item: "noisy_same_color" };
+    expect(findBestMatch(target, [noisySameColor, flat], 1)).toBe("flat");
+    // At weight 0 the two are an exact cost tie; findBestMatch keeps the
+    // first-listed candidate, same tie-break convention as findNearestOklab.
+    expect(findBestMatch(target, [noisySameColor, flat], 0)).toBe("noisy_same_color");
+  });
+
+  it("throws on an empty candidate list rather than returning a meaningless match", () => {
+    expect(() => findBestMatch(target, [], 1)).toThrow(RangeError);
   });
 });

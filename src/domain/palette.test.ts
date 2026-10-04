@@ -2,7 +2,7 @@ import { zipSync } from "fflate";
 import { describe, expect, it } from "vitest";
 import { readMinecraftArchive, type MinecraftArchive } from "../assets/archiveReader.ts";
 import type { DecodedTexture } from "../assets/textureDecoder.ts";
-import { rgb8ToOklab } from "./color.ts";
+import { oklabDistanceSquared, rgb8ToOklab } from "./color.ts";
 import {
   buildPalette,
   costTierOf,
@@ -82,13 +82,35 @@ function solidTexture(size: number, rgba: readonly [number, number, number, numb
   return { width: size, height: size, pixels };
 }
 
+/** Left half `leftRgba`, right half `rightRgba` — unlike every solid texture above, this has nonzero texture variance, which is what the busyness-aware matching tests below need. */
+function splitTexture(
+  size: number,
+  leftRgba: readonly [number, number, number, number],
+  rightRgba: readonly [number, number, number, number],
+): DecodedTexture {
+  const pixels = new Uint8ClampedArray(size * size * 4);
+  for (let row = 0; row < size; row++) {
+    for (let col = 0; col < size; col++) {
+      const rgba = col < size / 2 ? leftRgba : rightRgba;
+      const pixelIndex = (row * size + col) * 4;
+      pixels[pixelIndex] = rgba[0];
+      pixels[pixelIndex + 1] = rgba[1];
+      pixels[pixelIndex + 2] = rgba[2];
+      pixels[pixelIndex + 3] = rgba[3];
+    }
+  }
+  return { width: size, height: size, pixels };
+}
+
 const TEXTURE_FIXTURES: Readonly<Record<string, DecodedTexture>> = {
   GRAY: solidTexture(2, [136, 136, 136, 255]),
   YELLOW: solidTexture(2, [255, 215, 0, 255]),
   TAN: solidTexture(2, [219, 203, 150, 255]),
   GREEN: solidTexture(2, [95, 159, 53, 255]),
   TRANSPARENT: solidTexture(2, [255, 255, 255, 128]),
+  NEARLY_OPAQUE: solidTexture(2, [136, 136, 136, 252]),
   NONSQUARE: { width: 2, height: 4, pixels: new Uint8ClampedArray(2 * 4 * 4).fill(255) },
+  BLACK_WHITE_SPLIT: splitTexture(4, [0, 0, 0, 255], [255, 255, 255, 255]),
 };
 
 const fakeDecodeTexture: TextureDecoder = async (bytes) => {
@@ -294,6 +316,37 @@ describe("buildPalette", () => {
     // distinct from either texture alone.
     expect(twoTone?.color.L).not.toBeCloseTo(rgb8ToOklab({ r: 255, g: 215, b: 0 }).L, 2);
     expect(twoTone?.color.L).not.toBeCloseTo(rgb8ToOklab({ r: 136, g: 136, b: 136 }).L, 2);
+  });
+
+  it("gives a perfectly flat texture zero texture variance", async () => {
+    const palette = await buildPalette(testArchive(), undefined, fakeDecodeTexture);
+    const cobblestone = palette.find((block) => block.blockId === "cobblestone");
+    expect(cobblestone?.textureVariance).toBe(0);
+  });
+
+  it("gives a busy (half-black, half-white) texture positive texture variance, averaging each pixel's own squared distance from the texture's mean color", async () => {
+    const archive = archiveOf(cubeAllBlockFiles("noisy_thing", "BLACK_WHITE_SPLIT"));
+    const palette = await buildPalette(archive, undefined, fakeDecodeTexture);
+    const noisyThing = palette.find((block) => block.blockId === "noisy_thing");
+    expect(noisyThing).toBeDefined();
+    expect(noisyThing!.textureVariance).toBeGreaterThan(0);
+
+    // Every pixel is pure black or pure white in equal numbers, so the
+    // variance is the mean of each pure color's own squared distance
+    // from the texture's mean — NOT the same single number for both:
+    // the mean is the Oklab conversion of the LINEAR-light average of
+    // black and white, and Oklab's cube-root nonlinearity means that
+    // point sits closer to white than to black, not halfway between.
+    const blackDistanceSquared = oklabDistanceSquared(rgb8ToOklab({ r: 0, g: 0, b: 0 }), noisyThing!.color);
+    const whiteDistanceSquared = oklabDistanceSquared(rgb8ToOklab({ r: 255, g: 255, b: 255 }), noisyThing!.color);
+    expect(blackDistanceSquared).not.toBeCloseTo(whiteDistanceSquared, 2); // the nonlinearity, made explicit
+    expect(noisyThing!.textureVariance).toBeCloseTo((blackDistanceSquared + whiteDistanceSquared) / 2, 10);
+  });
+
+  it("accepts a texture with slightly-less-than-fully-opaque pixels (resource-pack rounding), unlike a genuinely translucent one", async () => {
+    const archive = archiveOf(cubeAllBlockFiles("rounded_alpha_thing", "NEARLY_OPAQUE"));
+    const palette = await buildPalette(archive, undefined, fakeDecodeTexture);
+    expect(palette.map((block) => block.blockId)).toContain("rounded_alpha_thing");
   });
 });
 

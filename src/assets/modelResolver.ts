@@ -2,8 +2,10 @@
  * Resolves a block id down to the six per-face texture ids of its
  * model, for the two shapes of block this app can build with:
  *
- * - a blockstate with exactly one variant (the empty-string key, i.e.
- *   no properties) — {@link resolveSingleVariantCubeModel};
+ * - any blockstate whose variants all resolve to a full cube — a single
+ *   no-properties (`""`) variant, or several property-keyed ones (e.g.
+ *   glazed terracotta's `facing=`), one of which is picked to represent
+ *   the whole block — {@link resolveCanonicalVariantCubeModel};
  * - the standard axis-pillar shape (variants keyed exactly
  *   `axis=x`/`axis=y`/`axis=z` — logs, wood, basalt, quartz/purpur
  *   pillars, and similar "orientable" blocks), resolved in a chosen
@@ -268,23 +270,102 @@ function resolveCubeModelFromReference(
   return { faceTextureIds: faceTextureIds as Record<CubeFaceDirection, string> };
 }
 
+export interface CanonicalVariant {
+  readonly model: ResolvedCubeModel;
+  /**
+   * The chosen variant's own blockstate properties, e.g.
+   * `{ facing: "north" }` — empty for a single (`""`-keyed) variant
+   * block, since there is nothing to disambiguate and the schematic
+   * this ultimately feeds into never needs a `Properties` tag for it
+   * either (see `litematic/writeSchematic.ts`).
+   */
+  readonly properties: Readonly<Record<string, string>>;
+}
+
+/** Parses a blockstate variant key (e.g. `"facing=north,lit=false"`) into a property map. The empty key (a single-variant block) parses to `{}`. A malformed pair (no `=`) is skipped rather than rejecting the whole block — the same fail-open spirit as this module's other parsing. */
+function parsePropertiesFromVariantKey(key: string): Readonly<Record<string, string>> {
+  if (key === "") return {};
+  const properties: Record<string, string> = {};
+  for (const pair of key.split(",")) {
+    const separatorIndex = pair.indexOf("=");
+    if (separatorIndex === -1) continue;
+    properties[pair.slice(0, separatorIndex)] = pair.slice(separatorIndex + 1);
+  }
+  return properties;
+}
+
 /**
- * Resolves `blockId` to its six per-face texture ids, or `undefined` if
- * it is not a single-variant full-cube block (see this module's header
- * comment for exactly what that covers).
+ * How "representative" a variant's properties make it, for picking one
+ * variant to stand in for the whole block (see
+ * {@link resolveCanonicalVariantCubeModel}). One point per property that
+ * matches a known idle/default value: any property whose value is the
+ * literal string `"false"` (an idle/inactive state — unlit, unpowered,
+ * closed, not snowy — rather than e.g. a lit furnace or an open door),
+ * plus `facing=north`, the vanilla convention for an unrotated model.
+ * Everything else is unscored; {@link resolveCanonicalVariantCubeModel}'s
+ * final lexicographic tie-break still makes the overall choice fully
+ * deterministic even when no property here applies.
  */
-export function resolveSingleVariantCubeModel(
+function representativenessScore(properties: Readonly<Record<string, string>>): number {
+  let score = 0;
+  for (const [name, value] of Object.entries(properties)) {
+    if (value === "false" || (name === "facing" && value === "north")) score += 1;
+  }
+  return score;
+}
+
+/**
+ * Resolves `blockId` to its six per-face texture ids, picking ONE
+ * blockstate variant to represent the whole block when it has more than
+ * the single no-properties (`""`) variant this app originally supported
+ * alone — e.g. glazed terracotta (`facing=`), furnaces and similar
+ * machines (`facing=`, `lit=`), mushroom blocks (six independent
+ * per-face booleans). The highest-{@link representativenessScore}
+ * variant wins; ties (including the common case of every variant
+ * scoring 0) are broken by the variant's own key string, lexicographically
+ * smallest, so the result is always fully deterministic.
+ *
+ * This is a reasonable, deterministic choice for color-matching
+ * purposes, not a claim that it is the exact blockstate a freshly-placed
+ * block would have — e.g. a mushroom block's six independent
+ * true/false per-face properties have no single universally "right"
+ * default, and this resolver does not attempt to special-case it.
+ *
+ * Returns `undefined` under the same conditions as any other shape this
+ * module resolves: a missing/empty/malformed blockstate or model file, a
+ * `multipart` blockstate (see `readVariantsMap`), an unresolvable
+ * texture variable, or a model that is not a single full
+ * `0,0,0`-`16,16,16` cube with all six faces — see this module's header
+ * comment. Deliberately NOT gated on {@link hasAxisVariants}: callers
+ * that want axis-pillar blocks handled by {@link resolveAxisVariantCubeModel}
+ * instead must check that themselves first (see `domain/palette.ts`'s
+ * `buildPalette`), since this resolver has no reason of its own to treat
+ * an `axis=` property any differently from any other.
+ */
+export function resolveCanonicalVariantCubeModel(
   archive: MinecraftArchive,
   blockId: string,
-): ResolvedCubeModel | undefined {
+): CanonicalVariant | undefined {
   const variants = readVariantsMap(archive, blockId);
   if (variants === undefined) return undefined;
-  const variantKeys = Object.keys(variants);
-  if (variantKeys.length !== 1 || variantKeys[0] !== "") return undefined; // not a single no-properties variant
 
-  const reference = extractVariantReference(variants[""]);
+  let bestKey: string | undefined;
+  let bestScore = -Infinity;
+  for (const key of Object.keys(variants).sort()) {
+    const score = representativenessScore(parsePropertiesFromVariantKey(key));
+    if (score > bestScore) {
+      bestScore = score;
+      bestKey = key;
+    }
+  }
+  if (bestKey === undefined) return undefined; // variants parsed to an empty object - nothing to resolve
+
+  const reference = extractVariantReference(variants[bestKey]);
   if (reference === undefined) return undefined;
-  return resolveCubeModelFromReference(archive, reference);
+  const model = resolveCubeModelFromReference(archive, reference);
+  if (model === undefined) return undefined;
+
+  return { model, properties: parsePropertiesFromVariantKey(bestKey) };
 }
 
 /** The two orientations offered for an axis-pillar block — see {@link resolveAxisVariantCubeModel}. */

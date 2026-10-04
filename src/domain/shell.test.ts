@@ -102,13 +102,18 @@ describe("positionOnFace", () => {
     // v is always y (true vertical) on the four side faces — east/west
     // use u=z (the "around" axis), not u=y, so that a texture's up
     // direction renders consistently on every side (see faceScreenAxes's
-    // doc comment for the real-world bug this fixes).
+    // doc comment for the real-world bug this fixes). On those same four
+    // faces v=7 lands at y=8 (16-1-7), not y=7: a decoded PNG's row 0 is
+    // its TOP, but world y=0 is the build's BOTTOM, so v must mirror y
+    // or every side face renders upside down (faceScreenAxes's doc
+    // comment again, the second bug it fixes). down/up have no such
+    // flip — v stays z directly on those two.
     expect(positionOnFace("down", 5, 7, 16)).toEqual({ x: 5, y: 0, z: 7 });
     expect(positionOnFace("up", 5, 7, 16)).toEqual({ x: 5, y: 15, z: 7 });
-    expect(positionOnFace("north", 5, 7, 16)).toEqual({ x: 5, y: 7, z: 0 });
-    expect(positionOnFace("south", 5, 7, 16)).toEqual({ x: 5, y: 7, z: 15 });
-    expect(positionOnFace("west", 5, 7, 16)).toEqual({ x: 0, y: 7, z: 5 });
-    expect(positionOnFace("east", 5, 7, 16)).toEqual({ x: 15, y: 7, z: 5 });
+    expect(positionOnFace("north", 5, 7, 16)).toEqual({ x: 5, y: 8, z: 0 });
+    expect(positionOnFace("south", 5, 7, 16)).toEqual({ x: 5, y: 8, z: 15 });
+    expect(positionOnFace("west", 5, 7, 16)).toEqual({ x: 0, y: 8, z: 5 });
+    expect(positionOnFace("east", 5, 7, 16)).toEqual({ x: 15, y: 8, z: 5 });
   });
 
   it("is always on the shell, for any (u, v)", () => {
@@ -159,7 +164,7 @@ function verticallyStripedTexture(
 }
 
 function paletteBlock(blockId: string, rgb: readonly [number, number, number]): PaletteBlock {
-  return { blockId, resourceLocation: `minecraft:${blockId}`, color: rgb8ToOklab({ r: rgb[0], g: rgb[1], b: rgb[2] }), costTier: "common" };
+  return { blockId, resourceLocation: `minecraft:${blockId}`, color: rgb8ToOklab({ r: rgb[0], g: rgb[1], b: rgb[2] }), textureVariance: 0, costTier: "common" };
 }
 
 const RED: readonly [number, number, number] = [255, 0, 0];
@@ -211,6 +216,40 @@ describe("buildVoxelGrid", () => {
     expect(voxels.every((v) => v.paletteBlock.blockId === "red_wool")).toBe(true);
   });
 
+  it("at the default variance weight, prefers a flatter candidate over a noisier one with an exact color match (the stripped-log-collapse scenario)", () => {
+    const sourceFaceTextures = uniformFaceTextures(RED);
+    const exactButNoisy: PaletteBlock = {
+      blockId: "noisy_red_wool",
+      resourceLocation: "minecraft:noisy_red_wool",
+      color: rgb8ToOklab({ r: RED[0], g: RED[1], b: RED[2] }), // perfect color match
+      textureVariance: 0.05, // but a visually busy texture
+      costTier: "common",
+    };
+    const closeButFlat: PaletteBlock = {
+      blockId: "flat_offred_wool",
+      resourceLocation: "minecraft:flat_offred_wool",
+      color: rgb8ToOklab({ r: 235, g: 20, b: 20 }), // slightly off red, not exact
+      textureVariance: 0,
+      costTier: "common",
+    };
+    const palette = [exactButNoisy, closeButFlat];
+
+    const withVariancePenalty = buildVoxelGrid({ edgeBlocks: 4, fillStyle: "solid", sourceFaceTextures, palette });
+    expect(withVariancePenalty.every((v) => v.paletteBlock.blockId === "flat_offred_wool")).toBe(true);
+
+    // Explicitly at weight 0, the exact (but noisy) color match wins
+    // instead — proving the outcome above really is the variance term
+    // at work, not some other difference between the two candidates.
+    const pureColorMatch = buildVoxelGrid({
+      edgeBlocks: 4,
+      fillStyle: "solid",
+      sourceFaceTextures,
+      palette,
+      varianceWeight: 0,
+    });
+    expect(pureColorMatch.every((v) => v.paletteBlock.blockId === "noisy_red_wool")).toBe(true);
+  });
+
   it("samples different faces independently when their source textures differ", () => {
     const sourceFaceTextures = uniformFaceTextures(RED);
     sourceFaceTextures.up = solidTexture(16, GREEN);
@@ -231,19 +270,27 @@ describe("buildVoxelGrid", () => {
     const voxels = buildVoxelGrid({ edgeBlocks: 16, fillStyle: "hollow", sourceFaceTextures, palette: PALETTE });
     const voxelAt = new Map(voxels.map((voxel) => [`${voxel.x},${voxel.y},${voxel.z}`, voxel]));
 
-    // Low y (texture's top half) -> green; high y (bottom half) -> red —
-    // on all four side faces alike, including east/west, which is
-    // exactly what the bug broke (it would have read red_wool at
-    // (15,2,8) and green_wool at (15,13,8): the opposite of these).
+    // High y (build top, texture's top half) -> green; low y (build
+    // bottom, texture's bottom half) -> red — on all four side faces
+    // alike, including east/west, which is exactly what the original
+    // rotation bug broke (it would have read red_wool at (15,2,8) and
+    // green_wool at (15,13,8): the opposite of these).
+    //
+    // (These expectations are also where the separate vertical-flip fix
+    // in faceScreenAxes shows up: a decoded PNG's row 0 is its own top,
+    // but world y=0 is the build's BOTTOM, so low y correctly shows the
+    // texture's BOTTOM half here, not its top — the reverse of what an
+    // earlier version of this same test asserted, back when that second
+    // bug was still present and unnoticed.)
     for (const [x, y, z, expectedBlockId] of [
-      [8, 2, 0, "green_wool"],
-      [8, 13, 0, "red_wool"],
-      [8, 2, 15, "green_wool"],
-      [8, 13, 15, "red_wool"],
-      [15, 2, 8, "green_wool"],
-      [15, 13, 8, "red_wool"],
-      [0, 2, 8, "green_wool"],
-      [0, 13, 8, "red_wool"],
+      [8, 13, 0, "green_wool"],
+      [8, 2, 0, "red_wool"],
+      [8, 13, 15, "green_wool"],
+      [8, 2, 15, "red_wool"],
+      [15, 13, 8, "green_wool"],
+      [15, 2, 8, "red_wool"],
+      [0, 13, 8, "green_wool"],
+      [0, 2, 8, "red_wool"],
     ] as const) {
       const voxel = voxelAt.get(`${x},${y},${z}`);
       expect(voxel?.paletteBlock.blockId, `at (${x},${y},${z})`).toBe(expectedBlockId);
@@ -263,6 +310,7 @@ describe("buildVoxelGrid", () => {
       blockId: "blend_wool",
       resourceLocation: "minecraft:blend_wool",
       color: linearRgbToOklab(blendedLinear),
+      textureVariance: 0,
       costTier: "common",
     };
     const palette = [...PALETTE, blendBlock];
@@ -301,5 +349,84 @@ describe("buildVoxelGrid", () => {
     expect(() => buildVoxelGrid({ edgeBlocks: 0, fillStyle: "solid", sourceFaceTextures, palette: PALETTE })).toThrow(
       RangeError,
     );
+  });
+
+  describe("dither option", () => {
+    const BLACK: readonly [number, number, number] = [0, 0, 0];
+    const WHITE: readonly [number, number, number] = [255, 255, 255];
+    const blackWhitePalette = [paletteBlock("black_wool", BLACK), paletteBlock("white_wool", WHITE)];
+
+    it("is off by default: a uniform mid-gray face resolves to one single block, not a mix", () => {
+      const sourceFaceTextures = uniformFaceTextures(RED);
+      sourceFaceTextures.up = solidTexture(16, [140, 140, 140]);
+      const voxels = buildVoxelGrid({
+        edgeBlocks: 16,
+        fillStyle: "hollow",
+        sourceFaceTextures,
+        palette: blackWhitePalette,
+        varianceWeight: 0,
+      });
+      const upBlockIds = new Set(voxels.filter((v) => v.y === 15).map((v) => v.paletteBlock.blockId));
+      expect(upBlockIds.size).toBe(1);
+    });
+
+    it("once enabled, turns that same uniform mid-gray face into a mix of both candidates (the whole point of error diffusion: the AREA average converges on the target even though neither candidate alone matches it)", () => {
+      const sourceFaceTextures = uniformFaceTextures(RED);
+      sourceFaceTextures.up = solidTexture(16, [140, 140, 140]);
+      const voxels = buildVoxelGrid({
+        edgeBlocks: 16,
+        fillStyle: "hollow",
+        sourceFaceTextures,
+        palette: blackWhitePalette,
+        varianceWeight: 0,
+        dither: { varianceWeight: 0 },
+      });
+      const upBlockIds = new Set(voxels.filter((v) => v.y === 15).map((v) => v.paletteBlock.blockId));
+      expect(upBlockIds.size).toBe(2);
+    });
+
+    it("is fully deterministic: building the same dithered face twice gives byte-identical results", () => {
+      const sourceFaceTextures = uniformFaceTextures(RED);
+      sourceFaceTextures.up = solidTexture(16, [140, 140, 140]);
+      const build = () =>
+        buildVoxelGrid({
+          edgeBlocks: 16,
+          fillStyle: "hollow",
+          sourceFaceTextures,
+          palette: blackWhitePalette,
+          dither: { varianceWeight: 0 },
+        }).map((v) => `${v.x},${v.y},${v.z}:${v.paletteBlock.blockId}`);
+      expect(build()).toEqual(build());
+    });
+
+    it("leaves a side-to-side edge voxel on the plain blended path even when dithering is on, exactly as it would with dithering off (edges stay one voxel wide and position-independent, not pulled into the per-face dithered grid)", () => {
+      const sourceFaceTextures = uniformFaceTextures(RED);
+      sourceFaceTextures.north = solidTexture(16, RED);
+      sourceFaceTextures.west = solidTexture(16, BLUE);
+      const blendedLinear = averageLinearRgb([
+        rgb8ToLinearRgb({ r: RED[0], g: RED[1], b: RED[2] }),
+        rgb8ToLinearRgb({ r: BLUE[0], g: BLUE[1], b: BLUE[2] }),
+      ]);
+      const blendBlock: PaletteBlock = {
+        blockId: "blend_wool",
+        resourceLocation: "minecraft:blend_wool",
+        color: linearRgbToOklab(blendedLinear),
+        textureVariance: 0,
+        costTier: "common",
+      };
+      const palette = [...PALETTE, blendBlock];
+
+      const voxels = buildVoxelGrid({
+        edgeBlocks: 16,
+        fillStyle: "hollow",
+        sourceFaceTextures,
+        palette,
+        dither: { varianceWeight: 0 },
+      });
+      const voxelAt = new Map(voxels.map((voxel) => [`${voxel.x},${voxel.y},${voxel.z}`, voxel]));
+      // Same edge voxel, same expectation as the undithered edge-blend
+      // test above — dithering must not change this voxel's outcome.
+      expect(voxelAt.get("0,5,0")?.paletteBlock.blockId).toBe("blend_wool");
+    });
   });
 });

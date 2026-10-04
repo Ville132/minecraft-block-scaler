@@ -27,7 +27,7 @@ describe("breakdownQuantity", () => {
 });
 
 function fakePaletteBlock(blockId: string): PaletteBlock {
-  return { blockId, resourceLocation: `minecraft:${blockId}`, color: rgb8ToOklab({ r: 100, g: 100, b: 100 }), costTier: "common" };
+  return { blockId, resourceLocation: `minecraft:${blockId}`, color: rgb8ToOklab({ r: 100, g: 100, b: 100 }), textureVariance: 0, costTier: "common" };
 }
 
 function fakeVoxels(blockIdCounts: Readonly<Record<string, number>>): Voxel[] {

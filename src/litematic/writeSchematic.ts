@@ -6,6 +6,7 @@
  */
 
 import { gzipSync } from "fflate";
+import type { PaletteBlock } from "../domain/palette.ts";
 import type { FillStyle, Voxel } from "../domain/shell.ts";
 import { bitsPerEntry, packBlockStateIndices, toSignedLongArray } from "./bitArray.ts";
 import { nbt, writeNbt } from "./nbt.ts";
@@ -39,6 +40,23 @@ function yMajorIndex(x: number, y: number, z: number, edgeBlocks: number): numbe
   return y * edgeBlocks * edgeBlocks + z * edgeBlocks + x;
 }
 
+interface BlockStatePaletteEntry {
+  /** Distinguishes this exact (resourceLocation, properties) pair from any other — e.g. `"minecraft:furnace[facing=north,lit=false]"`, or plain `"minecraft:cobblestone"` when there are no properties. Two voxels whose `paletteBlock`s share a `blockId` always share this key too, since `domain/palette.ts` resolves exactly one canonical variant (one fixed `properties` value) per block id for a given build — but the palette here is still deduplicated by this key, not by `resourceLocation` alone, so that invariant does not have to be trusted blindly. */
+  readonly key: string;
+  readonly resourceLocation: string;
+  readonly properties: Readonly<Record<string, string>> | undefined;
+}
+
+function blockStatePaletteEntryFor(paletteBlock: PaletteBlock): BlockStatePaletteEntry {
+  const { resourceLocation, properties } = paletteBlock;
+  if (properties === undefined || Object.keys(properties).length === 0) {
+    return { key: resourceLocation, resourceLocation, properties: undefined };
+  }
+  const sortedPairs = Object.entries(properties).sort(([a], [b]) => a.localeCompare(b));
+  const key = `${resourceLocation}[${sortedPairs.map(([name, value]) => `${name}=${value}`).join(",")}]`;
+  return { key, resourceLocation, properties: Object.fromEntries(sortedPairs) };
+}
+
 /**
  * Inputs: see {@link WriteSchematicParams}. `voxels` need not cover
  * every position (a hollow shell deliberately does not); uncovered
@@ -59,23 +77,26 @@ export function writeSchematicBytes(params: WriteSchematicParams): Uint8Array {
     throw new RangeError("writeSchematicBytes requires at least one voxel to build");
   }
 
-  const usedResourceLocations = Array.from(
-    new Set(voxels.map((voxel) => voxel.paletteBlock.resourceLocation)),
-  ).sort();
-  const blockStatePalette = [AIR_RESOURCE_LOCATION, ...usedResourceLocations];
-  const paletteIndexByResourceLocation = new Map(
-    blockStatePalette.map((resourceLocation, index) => [resourceLocation, index]),
-  );
+  const usedEntriesByKey = new Map<string, BlockStatePaletteEntry>();
+  for (const voxel of voxels) {
+    const entry = blockStatePaletteEntryFor(voxel.paletteBlock);
+    if (!usedEntriesByKey.has(entry.key)) usedEntriesByKey.set(entry.key, entry);
+  }
+  const usedEntries = Array.from(usedEntriesByKey.values()).sort((a, b) => a.key.localeCompare(b.key));
+  const blockStatePalette: readonly BlockStatePaletteEntry[] = [
+    { key: AIR_RESOURCE_LOCATION, resourceLocation: AIR_RESOURCE_LOCATION, properties: undefined },
+    ...usedEntries,
+  ];
+  const paletteIndexByKey = new Map(blockStatePalette.map((entry, index) => [entry.key, index]));
 
   const volume = edgeBlocks ** 3;
   const paletteIndices = new Array<number>(volume).fill(0); // 0 = air
   for (const voxel of voxels) {
-    const paletteIndex = paletteIndexByResourceLocation.get(voxel.paletteBlock.resourceLocation);
+    const key = blockStatePaletteEntryFor(voxel.paletteBlock).key;
+    const paletteIndex = paletteIndexByKey.get(key);
     if (paletteIndex === undefined) {
       // Unreachable: blockStatePalette was built from these same voxels.
-      throw new Error(
-        `internal invariant violated: '${voxel.paletteBlock.resourceLocation}' missing from its own block-state palette`,
-      );
+      throw new Error(`internal invariant violated: '${key}' missing from its own block-state palette`);
     }
     paletteIndices[yMajorIndex(voxel.x, voxel.y, voxel.z, edgeBlocks)] = paletteIndex;
   }
@@ -91,7 +112,16 @@ export function writeSchematicBytes(params: WriteSchematicParams): Uint8Array {
     Size: nbt.compound({ x: nbt.int(edgeBlocks), y: nbt.int(edgeBlocks), z: nbt.int(edgeBlocks) }),
     BlockStatePalette: nbt.list(
       "compound",
-      blockStatePalette.map((resourceLocation) => nbt.compound({ Name: nbt.string(resourceLocation) })),
+      blockStatePalette.map((entry) =>
+        nbt.compound({
+          Name: nbt.string(entry.resourceLocation),
+          ...(entry.properties !== undefined && {
+            Properties: nbt.compound(
+              Object.fromEntries(Object.entries(entry.properties).map(([name, value]) => [name, nbt.string(value)])),
+            ),
+          }),
+        }),
+      ),
     ),
     BlockStates: nbt.longArray(blockStates),
     TileEntities: nbt.list("compound", []),

@@ -95,6 +95,7 @@ export function ResultPanel({ result, edgeBlocks }: ResultPanelProps) {
         edgeBlocks={edgeBlocks}
         voxels={result.voxels}
         sourceFaceTexture={result.sourceFaceTextures[previewFace]}
+        usedBlockTextures={result.usedBlockTextures}
       />
     </section>
   );

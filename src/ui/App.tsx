@@ -10,10 +10,11 @@ import {
   type PaletteBlock,
   type PaletteOptions,
 } from "../domain/palette.ts";
-import type { FillStyle } from "../domain/shell.ts";
+import { VANILLA_TEXTURE_SIZE_PX } from "../domain/scale.ts";
+import { DEFAULT_VARIANCE_WEIGHT, type FillStyle } from "../domain/shell.ts";
 import { ArchiveUploadStep } from "./ArchiveUploadStep.tsx";
 import { BlockPickerStep } from "./BlockPickerStep.tsx";
-import { buildReplica, type BuildReplicaResult } from "./buildReplica.ts";
+import { buildReplica, resolveSourceTexturePixelsPerSide, type BuildReplicaResult } from "./buildReplica.ts";
 import { ResultPanel } from "./ResultPanel.tsx";
 import { ScaleAndOptionsStep } from "./ScaleAndOptionsStep.tsx";
 
@@ -49,8 +50,24 @@ export function App() {
   const [sourceBlockId, setSourceBlockId] = useState<string | null>(null);
   /** Non-null only while `sourceBlockId` names a block from `axisVariantBlocks` — see `hasAxisVariants` in `assets/modelResolver.ts`. */
   const [sourceBlockOrientation, setSourceBlockOrientation] = useState<AxisOrientation | null>(null);
+  // Synchronous (see resolveSourceTexturePixelsPerSide's doc comment) —
+  // a plain memo, not a loading-state effect. Falls back to vanilla's
+  // 16px, the only sane default before any block is chosen (or if the
+  // chosen one's texture can't be read for some reason buildReplica will
+  // surface more specifically if the user goes on to build anyway).
+  const texturePixelsPerSide = useMemo(
+    () =>
+      archive === null || sourceBlockId === null
+        ? VANILLA_TEXTURE_SIZE_PX
+        : (resolveSourceTexturePixelsPerSide(archive, sourceBlockId, sourceBlockOrientation) ??
+          VANILLA_TEXTURE_SIZE_PX),
+    [archive, sourceBlockId, sourceBlockOrientation],
+  );
   const [edgeBlocks, setEdgeBlocks] = useState<number | null>(null);
   const [fillStyle, setFillStyle] = useState<FillStyle>("hollow");
+  const [varianceWeight, setVarianceWeight] = useState<number>(DEFAULT_VARIANCE_WEIGHT);
+  /** Off by default — see `domain/dither.ts`'s header comment. */
+  const [ditherEnabled, setDitherEnabled] = useState(false);
 
   const [isBuilding, setIsBuilding] = useState(false);
   const [buildError, setBuildError] = useState<string | null>(null);
@@ -130,6 +147,8 @@ export function App() {
         edgeBlocks,
         fillStyle,
         palette: fillPalette,
+        varianceWeight,
+        ...(ditherEnabled && { dither: { varianceWeight } }),
       });
       setResult(built);
     } catch (cause) {
@@ -211,6 +230,7 @@ export function App() {
 
       <ScaleAndOptionsStep
         isReady={sourceBlockId !== null}
+        texturePixelsPerSide={texturePixelsPerSide}
         edgeBlocks={edgeBlocks}
         onEdgeBlocksChange={(edge) => {
           setEdgeBlocks(edge);
@@ -219,6 +239,16 @@ export function App() {
         fillStyle={fillStyle}
         onFillStyleChange={(style) => {
           setFillStyle(style);
+          setResult(null);
+        }}
+        varianceWeight={varianceWeight}
+        onVarianceWeightChange={(weight) => {
+          setVarianceWeight(weight);
+          setResult(null);
+        }}
+        ditherEnabled={ditherEnabled}
+        onDitherEnabledChange={(enabled) => {
+          setDitherEnabled(enabled);
           setResult(null);
         }}
       />

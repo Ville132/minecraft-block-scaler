@@ -1,7 +1,7 @@
 import { zipSync } from "fflate";
 import { describe, expect, it } from "vitest";
 import { readMinecraftArchive, type MinecraftArchive } from "./archiveReader.ts";
-import { hasAxisVariants, resolveAxisVariantCubeModel, resolveSingleVariantCubeModel } from "./modelResolver.ts";
+import { hasAxisVariants, resolveAxisVariantCubeModel, resolveCanonicalVariantCubeModel } from "./modelResolver.ts";
 
 function archiveOf(files: Record<string, unknown>): MinecraftArchive {
   const entries: Record<string, Uint8Array> = {};
@@ -58,10 +58,10 @@ function cubeAllArchive(overrides: Record<string, unknown> = {}): MinecraftArchi
   });
 }
 
-describe("resolveSingleVariantCubeModel — happy path", () => {
-  it("resolves all six faces through a cube_all parent chain", () => {
-    const result = resolveSingleVariantCubeModel(cubeAllArchive(), "cobblestone");
-    expect(result).toEqual({
+describe("resolveCanonicalVariantCubeModel — single-variant happy path", () => {
+  it("resolves all six faces through a cube_all parent chain, with no properties", () => {
+    const result = resolveCanonicalVariantCubeModel(cubeAllArchive(), "cobblestone");
+    expect(result?.model).toEqual({
       faceTextureIds: {
         down: "block/cobblestone",
         up: "block/cobblestone",
@@ -71,6 +71,7 @@ describe("resolveSingleVariantCubeModel — happy path", () => {
         west: "block/cobblestone",
       },
     });
+    expect(result?.properties).toEqual({});
   });
 
   it("resolves different textures per face through multiple indirection hops", () => {
@@ -100,11 +101,11 @@ describe("resolveSingleVariantCubeModel — happy path", () => {
       },
       "assets/minecraft/models/block/cube.json": CUBE_MODEL,
     });
-    const result = resolveSingleVariantCubeModel(archive, "mystery");
-    expect(result?.faceTextureIds.up).toBe("block/mystery_top");
-    expect(result?.faceTextureIds.down).toBe("block/mystery_bottom");
-    expect(result?.faceTextureIds.north).toBe("block/mystery_side");
-    expect(result?.faceTextureIds.west).toBe("block/mystery_side");
+    const result = resolveCanonicalVariantCubeModel(archive, "mystery");
+    expect(result?.model.faceTextureIds.up).toBe("block/mystery_top");
+    expect(result?.model.faceTextureIds.down).toBe("block/mystery_bottom");
+    expect(result?.model.faceTextureIds.north).toBe("block/mystery_side");
+    expect(result?.model.faceTextureIds.west).toBe("block/mystery_side");
   });
 
   it("takes the first option of a randomized (array) variant", () => {
@@ -115,45 +116,93 @@ describe("resolveSingleVariantCubeModel — happy path", () => {
         },
       },
     });
-    const result = resolveSingleVariantCubeModel(archive, "cobblestone");
-    expect(result?.faceTextureIds.up).toBe("block/cobblestone");
+    const result = resolveCanonicalVariantCubeModel(archive, "cobblestone");
+    expect(result?.model.faceTextureIds.up).toBe("block/cobblestone");
   });
 });
 
-describe("resolveSingleVariantCubeModel — rejections", () => {
-  it("rejects a multi-variant blockstate (e.g. an axis-dependent block like a log)", () => {
-    const archive = cubeAllArchive({
-      "assets/minecraft/blockstates/oak_log.json": {
-        variants: {
-          "axis=x": { model: "minecraft:block/oak_log_horizontal" },
-          "axis=y": { model: "minecraft:block/oak_log" },
-          "axis=z": { model: "minecraft:block/oak_log_horizontal" },
-        },
-      },
-    });
-    expect(resolveSingleVariantCubeModel(archive, "oak_log")).toBeUndefined();
-  });
-
-  it("rejects a single variant keyed by a property instead of the empty string", () => {
+describe("resolveCanonicalVariantCubeModel — multi-variant selection", () => {
+  it("accepts a single variant keyed by a property instead of the empty string (e.g. glazed terracotta's facing=) — this app originally rejected these outright", () => {
     const archive = cubeAllArchive({
       "assets/minecraft/blockstates/cobblestone.json": {
         variants: { "facing=north": { model: "minecraft:block/cobblestone" } },
       },
     });
-    expect(resolveSingleVariantCubeModel(archive, "cobblestone")).toBeUndefined();
+    const result = resolveCanonicalVariantCubeModel(archive, "cobblestone");
+    expect(result?.model.faceTextureIds.up).toBe("block/cobblestone");
+    expect(result?.properties).toEqual({ facing: "north" });
   });
 
+  it("prefers facing=north over other facing values when several are offered", () => {
+    const archive = cubeAllArchive({
+      "assets/minecraft/blockstates/cobblestone.json": {
+        variants: {
+          "facing=east": { model: "minecraft:block/cobblestone" },
+          "facing=north": { model: "minecraft:block/cobblestone" },
+          "facing=south": { model: "minecraft:block/cobblestone" },
+          "facing=west": { model: "minecraft:block/cobblestone" },
+        },
+      },
+    });
+    const result = resolveCanonicalVariantCubeModel(archive, "cobblestone");
+    expect(result?.properties).toEqual({ facing: "north" });
+  });
+
+  it("prefers a 'false'-valued property over 'true' (an idle default over an active one, e.g. an unlit furnace over a lit one)", () => {
+    const archive = cubeAllArchive({
+      "assets/minecraft/blockstates/cobblestone.json": {
+        variants: {
+          "lit=true": { model: "minecraft:block/cobblestone" },
+          "lit=false": { model: "minecraft:block/cobblestone" },
+        },
+      },
+    });
+    const result = resolveCanonicalVariantCubeModel(archive, "cobblestone");
+    expect(result?.properties).toEqual({ lit: "false" });
+  });
+
+  it("breaks a true tie (no property scores for either option) by the lexicographically smallest variant key", () => {
+    const archive = cubeAllArchive({
+      "assets/minecraft/blockstates/cobblestone.json": {
+        variants: {
+          "mode=subtract": { model: "minecraft:block/cobblestone" },
+          "mode=compare": { model: "minecraft:block/cobblestone" },
+        },
+      },
+    });
+    const result = resolveCanonicalVariantCubeModel(archive, "cobblestone");
+    expect(result?.properties).toEqual({ mode: "compare" }); // "mode=compare" < "mode=subtract"
+  });
+
+  it("does not special-case an axis=x/y/z-shaped blockstate — picks one deterministically like any other multi-variant block, since routing axis blocks to resolveAxisVariantCubeModel instead is the CALLER's job (see hasAxisVariants)", () => {
+    const result = resolveCanonicalVariantCubeModel(oakLogArchive(), "oak_log");
+    expect(result).toBeDefined();
+    // No property here scores ("axis" isn't "false" or facing=north), so
+    // this falls through to the lexicographic tie-break: "axis=x" is the
+    // smallest of "axis=x"/"axis=y"/"axis=z".
+    expect(result?.properties).toEqual({ axis: "x" });
+  });
+});
+
+describe("resolveCanonicalVariantCubeModel — rejections", () => {
   it("rejects a multipart blockstate", () => {
     const archive = cubeAllArchive({
       "assets/minecraft/blockstates/cobblestone.json": {
         multipart: [{ apply: { model: "minecraft:block/cobblestone" } }],
       },
     });
-    expect(resolveSingleVariantCubeModel(archive, "cobblestone")).toBeUndefined();
+    expect(resolveCanonicalVariantCubeModel(archive, "cobblestone")).toBeUndefined();
   });
 
   it("rejects a block whose blockstates file is missing", () => {
-    expect(resolveSingleVariantCubeModel(cubeAllArchive(), "does_not_exist")).toBeUndefined();
+    expect(resolveCanonicalVariantCubeModel(cubeAllArchive(), "does_not_exist")).toBeUndefined();
+  });
+
+  it("rejects an empty variants object (nothing to resolve)", () => {
+    const archive = cubeAllArchive({
+      "assets/minecraft/blockstates/cobblestone.json": { variants: {} },
+    });
+    expect(resolveCanonicalVariantCubeModel(archive, "cobblestone")).toBeUndefined();
   });
 
   it("rejects a model chain referencing a missing parent file", () => {
@@ -163,7 +212,7 @@ describe("resolveSingleVariantCubeModel — rejections", () => {
         textures: { all: "minecraft:block/cobblestone" },
       },
     });
-    expect(resolveSingleVariantCubeModel(archive, "cobblestone")).toBeUndefined();
+    expect(resolveCanonicalVariantCubeModel(archive, "cobblestone")).toBeUndefined();
   });
 
   it("rejects a cyclic parent chain instead of hanging", () => {
@@ -177,7 +226,7 @@ describe("resolveSingleVariantCubeModel — rejections", () => {
         textures: { particle: "#all" },
       },
     });
-    expect(resolveSingleVariantCubeModel(archive, "cobblestone")).toBeUndefined();
+    expect(resolveCanonicalVariantCubeModel(archive, "cobblestone")).toBeUndefined();
   });
 
   it("rejects a non-full-cube element (e.g. a slab-shaped bounding box)", () => {
@@ -199,7 +248,7 @@ describe("resolveSingleVariantCubeModel — rejections", () => {
         ],
       },
     });
-    expect(resolveSingleVariantCubeModel(archive, "cobblestone")).toBeUndefined();
+    expect(resolveCanonicalVariantCubeModel(archive, "cobblestone")).toBeUndefined();
   });
 
   it("rejects an element missing one of the six faces", () => {
@@ -221,7 +270,7 @@ describe("resolveSingleVariantCubeModel — rejections", () => {
         ],
       },
     });
-    expect(resolveSingleVariantCubeModel(archive, "cobblestone")).toBeUndefined();
+    expect(resolveCanonicalVariantCubeModel(archive, "cobblestone")).toBeUndefined();
   });
 
   it("rejects an unresolvable texture variable", () => {
@@ -231,14 +280,14 @@ describe("resolveSingleVariantCubeModel — rejections", () => {
         textures: {}, // never binds "all", so "#all" can never resolve
       },
     });
-    expect(resolveSingleVariantCubeModel(archive, "cobblestone")).toBeUndefined();
+    expect(resolveCanonicalVariantCubeModel(archive, "cobblestone")).toBeUndefined();
   });
 
   it("rejects malformed JSON in a model file", () => {
     const archive = cubeAllArchive({
       "assets/minecraft/models/block/cube_all.json": "{ not valid json",
     });
-    expect(resolveSingleVariantCubeModel(archive, "cobblestone")).toBeUndefined();
+    expect(resolveCanonicalVariantCubeModel(archive, "cobblestone")).toBeUndefined();
   });
 
   it("rejects multiple elements (not a single simple cube)", () => {
@@ -247,7 +296,7 @@ describe("resolveSingleVariantCubeModel — rejections", () => {
         elements: [CUBE_MODEL.elements[0], CUBE_MODEL.elements[0]],
       },
     });
-    expect(resolveSingleVariantCubeModel(archive, "cobblestone")).toBeUndefined();
+    expect(resolveCanonicalVariantCubeModel(archive, "cobblestone")).toBeUndefined();
   });
 });
 

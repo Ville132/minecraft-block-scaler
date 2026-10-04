@@ -12,11 +12,23 @@ import {
   expectString,
   readNbt,
   requireField,
+  type NbtTag,
 } from "./nbt.ts";
 import { schematicFileName, writeSchematicBytes } from "./writeSchematic.ts";
 
 function fakeBlock(blockId: string): PaletteBlock {
-  return { blockId, resourceLocation: `minecraft:${blockId}`, color: { L: 0.5, a: 0, b: 0 }, costTier: "common" };
+  return { blockId, resourceLocation: `minecraft:${blockId}`, color: { L: 0.5, a: 0, b: 0 }, textureVariance: 0, costTier: "common" };
+}
+
+function fakeBlockWithProperties(blockId: string, properties: Readonly<Record<string, string>>): PaletteBlock {
+  return { ...fakeBlock(blockId), properties };
+}
+
+/** Reads the single region out of a written schematic's root tag — every test here writes exactly one. */
+function soleRegion(root: NbtTag): Readonly<Record<string, NbtTag>> {
+  const regions = expectCompound(requireField(expectCompound(root), "Regions"));
+  const regionNames = Object.keys(regions);
+  return expectCompound(requireField(regions, regionNames[0]!));
 }
 
 describe("schematicFileName", () => {
@@ -124,5 +136,73 @@ describe("writeSchematicBytes", () => {
     const fixturePath = new URL("./__fixtures__/2x2x2_solid_stone.litematic", import.meta.url);
     const golden = readFileSync(fixturePath);
     expect(Array.from(bytes)).toEqual(Array.from(golden));
+  });
+
+  it("writes a Properties tag only for a palette block that carries properties, and sorts them by key", () => {
+    const furnace = fakeBlockWithProperties("furnace", { lit: "false", facing: "north" });
+    const stone = fakeBlock("stone"); // no properties
+    const voxels: Voxel[] = [
+      { x: 0, y: 0, z: 0, paletteBlock: furnace },
+      { x: 1, y: 0, z: 0, paletteBlock: stone },
+    ];
+
+    const bytes = writeSchematicBytes({
+      sourceBlockId: "furnace",
+      edgeBlocks: 2,
+      fillStyle: "solid",
+      voxels,
+      now: () => 0,
+    });
+
+    const { tag: root } = readNbt(gunzipSync(bytes));
+    const region = soleRegion(root);
+    const paletteEntries = expectList(requireField(region, "BlockStatePalette")).map(expectCompound);
+
+    // air, then alphabetically by resource location: furnace before stone.
+    expect(paletteEntries.map((entry) => expectString(requireField(entry, "Name")))).toEqual([
+      "minecraft:air",
+      "minecraft:furnace",
+      "minecraft:stone",
+    ]);
+
+    const furnaceEntry = paletteEntries[1]!;
+    const furnaceProperties = expectCompound(requireField(furnaceEntry, "Properties"));
+    expect(Object.keys(furnaceProperties)).toEqual(["facing", "lit"]); // sorted, not insertion order
+    expect(expectString(requireField(furnaceProperties, "facing"))).toBe("north");
+    expect(expectString(requireField(furnaceProperties, "lit"))).toBe("false");
+
+    const stoneEntry = paletteEntries[2]!;
+    expect(stoneEntry["Properties"]).toBeUndefined();
+
+    const airEntry = paletteEntries[0]!;
+    expect(airEntry["Properties"]).toBeUndefined();
+  });
+
+  it("treats two palette blocks with the same resource location but different properties as distinct schematic palette entries", () => {
+    const facingNorth = fakeBlockWithProperties("glazed_terracotta", { facing: "north" });
+    const facingEast = fakeBlockWithProperties("glazed_terracotta", { facing: "east" });
+    const voxels: Voxel[] = [
+      { x: 0, y: 0, z: 0, paletteBlock: facingNorth },
+      { x: 1, y: 0, z: 0, paletteBlock: facingEast },
+    ];
+
+    const bytes = writeSchematicBytes({
+      sourceBlockId: "glazed_terracotta",
+      edgeBlocks: 2,
+      fillStyle: "solid",
+      voxels,
+      now: () => 0,
+    });
+
+    const { tag: root } = readNbt(gunzipSync(bytes));
+    const region = soleRegion(root);
+    const paletteEntries = expectList(requireField(region, "BlockStatePalette")).map(expectCompound);
+
+    // air + two distinct glazed_terracotta entries, not deduplicated down to one.
+    expect(paletteEntries).toHaveLength(3);
+    const facingValues = paletteEntries
+      .slice(1)
+      .map((entry) => expectString(requireField(expectCompound(requireField(entry, "Properties")), "facing")));
+    expect(new Set(facingValues)).toEqual(new Set(["north", "east"]));
   });
 });

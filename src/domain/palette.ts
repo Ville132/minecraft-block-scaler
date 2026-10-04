@@ -10,12 +10,19 @@ import { listBlockIds, texturePath, textureMetaPath, type MinecraftArchive } fro
 import {
   hasAxisVariants,
   resolveAxisVariantCubeModel,
-  resolveSingleVariantCubeModel,
+  resolveCanonicalVariantCubeModel,
   type ResolvedCubeModel,
 } from "../assets/modelResolver.ts";
 import { requiresScarceIngredient } from "../assets/recipes.ts";
 import { decodePngTexture, type DecodedTexture } from "../assets/textureDecoder.ts";
-import { averageLinearRgb, linearRgbToOklab, rgb8ToLinearRgb, type LinearRgb, type Oklab } from "./color.ts";
+import {
+  averageLinearRgb,
+  linearRgbToOklab,
+  oklabDistanceSquared,
+  rgb8ToLinearRgb,
+  type LinearRgb,
+  type Oklab,
+} from "./color.ts";
 
 export type CostTier = "common" | "precious";
 
@@ -24,7 +31,11 @@ export interface PaletteBlock {
   /** The fully-namespaced id to write into the schematic's block-state palette, e.g. `"minecraft:cobblestone"`. */
   readonly resourceLocation: string;
   readonly color: Oklab;
+  /** Mean squared Oklab distance of this block's own texture pixels from `color` — how visually "busy" the texture is, 0 for a perfectly flat one. See `color.ts`'s `findBestMatch`, which penalizes a noisy block by this amount when picking fill material. */
+  readonly textureVariance: number;
   readonly costTier: CostTier;
+  /** The blockstate properties of the specific variant this block's appearance/geometry was resolved from (see `assets/modelResolver.ts`'s `resolveCanonicalVariantCubeModel`) — e.g. `{ facing: "north" }` for a glazed terracotta. Omitted entirely for a single-variant block or an axis-pillar block (the latter relies on a schematic's own default of `axis=y` — see `litematic/writeSchematic.ts`), both of which need no `Properties` tag written at all. */
+  readonly properties?: Readonly<Record<string, string>>;
 }
 
 export interface PaletteOptions {
@@ -190,20 +201,30 @@ function passesExclusionFilters(archive: MinecraftArchive, blockId: string, opti
 /** Injected so tests can supply a deterministic fake instead of a real PNG decoder (see `textureDecoder.ts`'s header comment for why that decoder itself has no automated test). */
 export type TextureDecoder = (pngBytes: Uint8Array) => Promise<DecodedTexture>;
 
+/** Below this alpha, a pixel is treated as genuinely translucent and disqualifies its texture. Short of 255 on purpose: real resource packs sometimes export a handful of pixels at 254/253 from lossy rounding in an otherwise fully opaque texture, which full-opacity-only would reject for no visible reason. */
+const OPAQUE_ALPHA_THRESHOLD = 250;
+
+interface TextureStatistics {
+  readonly mean: LinearRgb;
+  /** Every opaque pixel's own linear-light color — kept (not just summarized) so {@link representativeAppearance} can measure each pixel's spread around the block's FINAL color once every distinct texture's mean is known. */
+  readonly pixels: readonly LinearRgb[];
+}
+
 /**
- * The linear-light average color of one texture, or `undefined` if the
- * texture is disqualified: animated (an `.mcmeta` file sits beside it,
- * or its decoded pixels are not square — a strong sign of a stacked
- * animation filmstrip) or not fully opaque everywhere. Either case
- * disqualifies the WHOLE texture rather than averaging just the
- * remaining pixels, since a partial, unrepresentative average would be
- * a worse match than simply not offering the block at all.
+ * One texture's pixel statistics, or `undefined` if the texture is
+ * disqualified: animated (an `.mcmeta` file sits beside it), its
+ * decoded pixels are not square (a strong sign of a stacked animation
+ * filmstrip), or any pixel is not opaque enough (see
+ * {@link OPAQUE_ALPHA_THRESHOLD}). Either case disqualifies the WHOLE
+ * texture rather than averaging just the remaining pixels, since a
+ * partial, unrepresentative average would be a worse match than simply
+ * not offering the block at all.
  */
-async function opaqueTextureAverage(
+async function opaqueTextureStatistics(
   archive: MinecraftArchive,
   textureId: string,
   decodeTexture: TextureDecoder,
-): Promise<LinearRgb | undefined> {
+): Promise<TextureStatistics | undefined> {
   if (archive.getFile(textureMetaPath(textureId)) !== undefined) return undefined;
 
   const bytes = archive.getFile(texturePath(textureId));
@@ -212,11 +233,11 @@ async function opaqueTextureAverage(
   const decoded = await decodeTexture(bytes);
   if (decoded.width !== decoded.height) return undefined;
 
-  const samples: LinearRgb[] = [];
+  const pixels: LinearRgb[] = [];
   for (let pixelStart = 0; pixelStart < decoded.pixels.length; pixelStart += 4) {
     const alpha = decoded.pixels[pixelStart + 3]!;
-    if (alpha !== 255) return undefined;
-    samples.push(
+    if (alpha < OPAQUE_ALPHA_THRESHOLD) return undefined;
+    pixels.push(
       rgb8ToLinearRgb({
         r: decoded.pixels[pixelStart]!,
         g: decoded.pixels[pixelStart + 1]!,
@@ -224,35 +245,61 @@ async function opaqueTextureAverage(
       }),
     );
   }
-  return averageLinearRgb(samples);
+  return { mean: averageLinearRgb(pixels), pixels };
+}
+
+export interface BlockAppearance {
+  readonly color: Oklab;
+  readonly variance: number;
 }
 
 /**
- * A block's representative color: the linear-light average across each
- * of its DISTINCT face textures (deduplicated by texture id, each
- * counted once regardless of how many of the 6 faces use it). For the
- * common case — a `cube_all`-style block where all six faces share one
- * texture — this is exactly that texture's own average. Blocks whose
- * faces use several different textures (e.g. a distinct top texture)
- * get an equal-weight average across those distinct textures rather
- * than one weighted by face count; no candidate block this app ships
- * exclusion rules for actually has that shape, so the simplification is
- * untested in practice but documented here in case a resource pack
- * introduces one.
+ * A block's representative appearance: its color, plus how visually
+ * busy its texture is around that color.
+ *
+ * `color` is the linear-light average across each of its DISTINCT face
+ * textures (deduplicated by texture id, each counted once regardless of
+ * how many of the 6 faces use it) — unchanged from this app's original
+ * single-color representation. For the common case — a `cube_all`-style
+ * block where all six faces share one texture — this is exactly that
+ * texture's own average. Blocks whose faces use several different
+ * textures (e.g. a distinct top texture) get an equal-weight average
+ * across those distinct textures rather than one weighted by face
+ * count; no candidate block this app ships exclusion rules for actually
+ * has that shape, so the simplification is untested in practice but
+ * documented here in case a resource pack introduces one.
+ *
+ * `variance` is the mean squared Oklab distance of every pixel of every
+ * distinct texture from the block's own `color`, pooled with the same
+ * equal-weight-per-texture convention as `color` itself (a texture's own
+ * mean-squared-distance is computed first, then those per-texture
+ * numbers are averaged) — so a block whose faces differ wildly from each
+ * other is correctly scored as a poor single-color stand-in, not only a
+ * block that is noisy within one face. 0 for a perfectly flat texture
+ * (every pixel equals the mean exactly).
  */
-async function representativeColor(
+async function representativeAppearance(
   archive: MinecraftArchive,
   model: ResolvedCubeModel,
   decodeTexture: TextureDecoder,
-): Promise<Oklab | undefined> {
+): Promise<BlockAppearance | undefined> {
   const distinctTextureIds = new Set(Object.values(model.faceTextureIds));
-  const perTextureAverages: LinearRgb[] = [];
+  const statsByTexture: TextureStatistics[] = [];
   for (const textureId of distinctTextureIds) {
-    const average = await opaqueTextureAverage(archive, textureId, decodeTexture);
-    if (average === undefined) return undefined;
-    perTextureAverages.push(average);
+    const stats = await opaqueTextureStatistics(archive, textureId, decodeTexture);
+    if (stats === undefined) return undefined;
+    statsByTexture.push(stats);
   }
-  return linearRgbToOklab(averageLinearRgb(perTextureAverages));
+
+  const color = linearRgbToOklab(averageLinearRgb(statsByTexture.map((stats) => stats.mean)));
+
+  const perTextureVariances = statsByTexture.map((stats) => {
+    const squaredDistances = stats.pixels.map((pixel) => oklabDistanceSquared(linearRgbToOklab(pixel), color));
+    return squaredDistances.reduce((sum, value) => sum + value, 0) / squaredDistances.length;
+  });
+  const variance = perTextureVariances.reduce((sum, value) => sum + value, 0) / perTextureVariances.length;
+
+  return { color, variance };
 }
 
 /**
@@ -263,7 +310,7 @@ async function representativeColor(
  * `decodeTexture`, the PNG decoder (defaults to the real browser-based
  * one; tests inject a fake).
  * Output: one entry per eligible block, each with its representative
- * color already resolved — ready for `color.ts`'s `findNearestOklab`.
+ * appearance already resolved — ready for `color.ts`'s `findBestMatch`.
  * Blocks that fail any eligibility check are silently omitted (this is
  * the expected, common case for most of the game's blocks, not a
  * failure); nothing here throws except through a genuinely broken
@@ -278,14 +325,28 @@ export async function buildPalette(
 
   for (const blockId of listBlockIds(archive)) {
     if (!passesExclusionFilters(archive, blockId, options)) continue;
+    // Axis-pillar blocks get their own dedicated resolver and list (see
+    // listAxisVariantBlocks below) — skipped here explicitly so a log
+    // never lands in both lists, which palette.test.ts's disjointness
+    // test pins. resolveCanonicalVariantCubeModel has no reason of its
+    // own to treat an `axis=` property any differently from any other,
+    // so without this check it would happily "resolve" one too.
+    if (hasAxisVariants(archive, blockId)) continue;
 
-    const model = resolveSingleVariantCubeModel(archive, blockId);
-    if (model === undefined) continue;
+    const canonicalVariant = resolveCanonicalVariantCubeModel(archive, blockId);
+    if (canonicalVariant === undefined) continue;
 
-    const color = await representativeColor(archive, model, decodeTexture);
-    if (color === undefined) continue;
+    const appearance = await representativeAppearance(archive, canonicalVariant.model, decodeTexture);
+    if (appearance === undefined) continue;
 
-    paletteBlocks.push({ blockId, resourceLocation: `minecraft:${blockId}`, color, costTier: costTierOf(blockId) });
+    paletteBlocks.push({
+      blockId,
+      resourceLocation: `minecraft:${blockId}`,
+      color: appearance.color,
+      textureVariance: appearance.variance,
+      costTier: costTierOf(blockId),
+      ...(Object.keys(canonicalVariant.properties).length > 0 && { properties: canonicalVariant.properties }),
+    });
   }
 
   return paletteBlocks;
@@ -323,10 +384,16 @@ export async function listAxisVariantBlocks(
     const model = resolveAxisVariantCubeModel(archive, blockId, "upright");
     if (model === undefined) continue;
 
-    const color = await representativeColor(archive, model, decodeTexture);
-    if (color === undefined) continue;
+    const appearance = await representativeAppearance(archive, model, decodeTexture);
+    if (appearance === undefined) continue;
 
-    blocks.push({ blockId, resourceLocation: `minecraft:${blockId}`, color, costTier: costTierOf(blockId) });
+    blocks.push({
+      blockId,
+      resourceLocation: `minecraft:${blockId}`,
+      color: appearance.color,
+      textureVariance: appearance.variance,
+      costTier: costTierOf(blockId),
+    });
   }
 
   return blocks;

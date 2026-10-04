@@ -30,7 +30,20 @@ export function bitsPerEntry(paletteSize: number): number {
   if (!Number.isInteger(paletteSize) || paletteSize < 1) {
     throw new RangeError(`paletteSize must be a positive integer, got ${paletteSize}`);
   }
-  const bitsNeededForPalette = Math.ceil(Math.log2(paletteSize));
+  // Exact integer bit-length (smallest b with 2^b >= paletteSize), not
+  // Math.ceil(Math.log2(paletteSize)): floating-point log2 is not
+  // contractually guaranteed exact right at a power-of-two boundary
+  // across every JS engine, and a one-bit error here silently shifts
+  // every single entry in the packed array — the single highest-stakes
+  // number in this whole format (see this module's header comment).
+  // Plain integer doubling has no such risk, for any realistic palette
+  // size (safe up to 2^53, Number's own exact-integer limit).
+  let bitsNeededForPalette = 0;
+  let exclusiveUpperBound = 1;
+  while (exclusiveUpperBound < paletteSize) {
+    exclusiveUpperBound *= 2;
+    bitsNeededForPalette++;
+  }
   return Math.max(2, bitsNeededForPalette);
 }
 

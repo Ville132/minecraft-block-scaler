@@ -141,16 +141,78 @@ export function oklabToRgb8(lab: Oklab): Rgb8 {
   return linearRgbToRgb8(oklabToLinearRgb(lab));
 }
 
-/** Plain Euclidean distance in Oklab space — Oklab is designed so this already tracks perceptual difference, with no further weighting needed. */
-export function oklabDistance(a: Oklab, b: Oklab): number {
+/** Squared Euclidean distance in Oklab space — avoids a `sqrt` when only relative ordering matters (e.g. nearest-match), and is the natural unit for a variance term (see `findBestMatch`), since variance is itself in squared-distance units. */
+export function oklabDistanceSquared(a: Oklab, b: Oklab): number {
   const dL = a.L - b.L;
   const da = a.a - b.a;
   const db = a.b - b.b;
-  return Math.sqrt(dL * dL + da * da + db * db);
+  return dL * dL + da * da + db * db;
+}
+
+/** Plain Euclidean distance in Oklab space — Oklab is designed so this already tracks perceptual difference, with no further weighting needed. */
+export function oklabDistance(a: Oklab, b: Oklab): number {
+  return Math.sqrt(oklabDistanceSquared(a, b));
+}
+
+export interface ScoredCandidate<T> {
+  readonly color: Oklab;
+  /** Mean squared Oklab distance of this candidate's own texture pixels from its `color` — how visually "busy" it is. 0 for a perfectly flat texture. */
+  readonly variance: number;
+  readonly item: T;
 }
 
 /**
- * Finds the closest-matching candidate to `target` by Oklab distance.
+ * Finds the candidate that best stands in for `target`, accounting for
+ * both color accuracy AND how visually busy the candidate's own
+ * texture is.
+ *
+ * The scoring falls directly out of the bias-variance decomposition of
+ * expected squared error: if a candidate `B` is used to represent
+ * `target`, the expected squared perceptual error of a random pixel of
+ * `B` is `|mean(B) - target|^2 + Var(B)` — the color miss, plus the
+ * candidate's own noise around its mean. Minimizing that sum is exactly
+ * `oklabDistanceSquared(candidate.color, target) + varianceWeight * candidate.variance`.
+ * `varianceWeight` scales how much the second term counts: `0`
+ * reproduces plain nearest-color matching (a noisy block is just as
+ * eligible as a flat one with the same mean); `1` is the literal,
+ * unscaled expected-error sum: how much the candidate would actually be
+ * expected to blur or mis-color a single pixel it's standing in for, no
+ * extra weighting added. Higher values increasingly prefer flat blocks
+ * over busy ones even at a worse color match.
+ *
+ * Inputs: `target`, the color to match; `candidates`, each paired with
+ * the item it should resolve to if best; `varianceWeight`, see above.
+ * Output: the best candidate's `item`.
+ * Failure mode: throws `RangeError` on an empty candidate list, rather
+ * than returning a meaningless default match.
+ */
+export function findBestMatch<T>(
+  target: Oklab,
+  candidates: readonly ScoredCandidate<T>[],
+  varianceWeight: number,
+): T {
+  if (candidates.length === 0) {
+    throw new RangeError("findBestMatch requires at least one candidate");
+  }
+  let best = candidates[0]!;
+  let bestCost = oklabDistanceSquared(target, best.color) + varianceWeight * best.variance;
+  for (let i = 1; i < candidates.length; i++) {
+    const candidate = candidates[i]!;
+    const cost = oklabDistanceSquared(target, candidate.color) + varianceWeight * candidate.variance;
+    if (cost < bestCost) {
+      best = candidate;
+      bestCost = cost;
+    }
+  }
+  return best.item;
+}
+
+/**
+ * Finds the closest-matching candidate to `target` by plain Oklab
+ * distance, ignoring texture busyness — a thin convenience wrapper
+ * around {@link findBestMatch} with every candidate's variance zeroed
+ * out and `varianceWeight` zero, so the variance term never affects the
+ * result.
  *
  * Inputs: `target`, the color to match; `candidates`, each paired with
  * the item it should resolve to if nearest.
@@ -162,18 +224,9 @@ export function findNearestOklab<T>(
   target: Oklab,
   candidates: readonly { readonly color: Oklab; readonly item: T }[],
 ): T {
-  if (candidates.length === 0) {
-    throw new RangeError("findNearestOklab requires at least one candidate");
-  }
-  let best = candidates[0]!;
-  let bestDistance = oklabDistance(target, best.color);
-  for (let i = 1; i < candidates.length; i++) {
-    const candidate = candidates[i]!;
-    const distance = oklabDistance(target, candidate.color);
-    if (distance < bestDistance) {
-      best = candidate;
-      bestDistance = distance;
-    }
-  }
-  return best.item;
+  return findBestMatch(
+    target,
+    candidates.map((candidate) => ({ ...candidate, variance: 0 })),
+    0,
+  );
 }
