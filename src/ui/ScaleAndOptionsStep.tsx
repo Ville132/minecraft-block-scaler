@@ -22,6 +22,8 @@ export const DEFAULT_MAX_DISTINCT_BLOCKS = 12;
 
 export interface ScaleAndOptionsStepProps {
   readonly isReady: boolean;
+  /** The selected source block, shown in this step's own heading so scrolling past step 2 doesn't lose track of what's actually being scaled — `null` before anything is picked. */
+  readonly sourceBlockId: string | null;
   /** The selected source block's REAL texture resolution (16 for vanilla; see `ui/buildReplica.ts`'s `resolveSourceTexturePixelsPerSide`) — sizes are classified against this, not a hardcoded assumption, so a non-vanilla resource pack still gets correctly "exact" vs "distorted" labels. */
   readonly texturePixelsPerSide: number;
   readonly edgeBlocks: number | null;
@@ -62,6 +64,7 @@ function fidelityLabel(classification: ScaleClassification): string {
 
 export function ScaleAndOptionsStep({
   isReady,
+  sourceBlockId,
   texturePixelsPerSide,
   edgeBlocks,
   onEdgeBlocksChange,
@@ -103,6 +106,7 @@ export function ScaleAndOptionsStep({
       <h2>
         <span className="step-number">3</span>
         Choose a size
+        {sourceBlockId !== null && <span className="step-context">scaling {sourceBlockId}</span>}
       </h2>
 
       <div className="scale-grid">

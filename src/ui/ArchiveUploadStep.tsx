@@ -86,6 +86,9 @@ export function ArchiveUploadStep({
   }
 
   async function handleUseDifferentFile(): Promise<void> {
+    if (!window.confirm("Use a different file? This clears the uploaded archive and your selected block.")) {
+      return;
+    }
     setError(null);
     if (inputRef.current !== null) inputRef.current.value = "";
     onArchiveCleared();

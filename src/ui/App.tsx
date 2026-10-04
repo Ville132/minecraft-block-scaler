@@ -18,20 +18,27 @@ import { BlockPickerStep } from "./BlockPickerStep.tsx";
 import { buildReplica, resolveSourceTexturePixelsPerSide, type BuildReplicaResult } from "./buildReplica.ts";
 import { ResultPanel } from "./ResultPanel.tsx";
 import { DEFAULT_MAX_DISTINCT_BLOCKS, ScaleAndOptionsStep } from "./ScaleAndOptionsStep.tsx";
+import { usePersistedState } from "./usePersistedState.ts";
 
 export function App() {
   const [archive, setArchive] = useState<MinecraftArchive | null>(null);
   const [loadedFileName, setLoadedFileName] = useState<string | null>(null);
   const [loadedFromCache, setLoadedFromCache] = useState(false);
 
-  const [paletteOptions, setPaletteOptions] = useState<PaletteOptions>(DEFAULT_PALETTE_OPTIONS);
+  const [paletteOptions, setPaletteOptions] = usePersistedState<PaletteOptions>(
+    "paletteOptions",
+    DEFAULT_PALETTE_OPTIONS,
+  );
   const [palette, setPalette] = useState<readonly PaletteBlock[]>([]);
   const [axisVariantBlocks, setAxisVariantBlocks] = useState<readonly PaletteBlock[]>([]);
   const [isLoadingPalette, setIsLoadingPalette] = useState(false);
   /** Restricts FILL material to wood blocks only — unlike `paletteOptions`, this never hides a block from the "choose a block to scale" picker, only from what can be used to color it in. */
-  const [onlyWoodFillMaterial, setOnlyWoodFillMaterial] = useState(false);
+  const [onlyWoodFillMaterial, setOnlyWoodFillMaterial] = usePersistedState("onlyWoodFillMaterial", false);
   /** Excludes wool/hay/bookshelf/wood-family FILL material (same picker-vs-fill distinction as `onlyWoodFillMaterial`) — not a `paletteOptions` toggle because most axis-pillar SOURCE blocks (logs) are themselves flammable wood, so excluding flammable blocks archive-wide would also remove logs from the scale-source picker, which defeats scaling up a log at all. Off by default: wood/wool are often the best color match for a natural-looking source block, and most builds are nowhere near fire. */
-  const [avoidFlammableFillMaterial, setAvoidFlammableFillMaterial] = useState(false);
+  const [avoidFlammableFillMaterial, setAvoidFlammableFillMaterial] = usePersistedState(
+    "avoidFlammableFillMaterial",
+    false,
+  );
 
   // Axis-pillar blocks (stripped logs, plain "wood"/all-bark variants,
   // nether stems/hyphae, …) are just as usable as fill material as any
@@ -66,13 +73,20 @@ export function App() {
           VANILLA_TEXTURE_SIZE_PX),
     [archive, sourceBlockId, sourceBlockOrientation],
   );
+  // edgeBlocks is deliberately NOT persisted — it depends on the
+  // selected source block's own texture resolution (texturePixelsPerSide),
+  // so a size that was "exact" for one block could be "distorted" for a
+  // completely different one restored from a past visit.
   const [edgeBlocks, setEdgeBlocks] = useState<number | null>(null);
-  const [fillStyle, setFillStyle] = useState<FillStyle>("hollow");
-  const [varianceWeight, setVarianceWeight] = useState<number>(DEFAULT_VARIANCE_WEIGHT);
+  const [fillStyle, setFillStyle] = usePersistedState<FillStyle>("fillStyle", "hollow");
+  const [varianceWeight, setVarianceWeight] = usePersistedState<number>("varianceWeight", DEFAULT_VARIANCE_WEIGHT);
   /** Off by default — see `domain/dither.ts`'s header comment. */
-  const [ditherEnabled, setDitherEnabled] = useState(false);
+  const [ditherEnabled, setDitherEnabled] = usePersistedState("ditherEnabled", false);
   /** `null` means no cap — see `domain/consolidate.ts`. Defaults ON: nothing upstream limits distinct block count, and a cap at or above whatever a build would naturally use is a no-op, so defaulting it on costs nothing for a build that was already simple. */
-  const [maxDistinctBlocks, setMaxDistinctBlocks] = useState<number | null>(DEFAULT_MAX_DISTINCT_BLOCKS);
+  const [maxDistinctBlocks, setMaxDistinctBlocks] = usePersistedState<number | null>(
+    "maxDistinctBlocks",
+    DEFAULT_MAX_DISTINCT_BLOCKS,
+  );
 
   const [isBuilding, setIsBuilding] = useState(false);
   const [buildError, setBuildError] = useState<string | null>(null);
@@ -244,6 +258,7 @@ export function App() {
 
       <ScaleAndOptionsStep
         isReady={sourceBlockId !== null}
+        sourceBlockId={sourceBlockId}
         texturePixelsPerSide={texturePixelsPerSide}
         edgeBlocks={edgeBlocks}
         onEdgeBlocksChange={(edge) => {
@@ -276,6 +291,7 @@ export function App() {
         <h2>
           <span className="step-number">4</span>
           Build
+          {sourceBlockId !== null && <span className="step-context">scaling {sourceBlockId}</span>}
         </h2>
         <button type="button" className="primary" disabled={!canBuild || isBuilding} onClick={handleBuild}>
           {isBuilding ? "Building…" : result !== null && resultIsStale ? "Rebuild replica" : "Build replica"}

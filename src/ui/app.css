@@ -191,6 +191,17 @@ h1 {
   gap: 10px;
 }
 
+.step h2 .step-context {
+  margin-left: auto;
+  text-transform: none;
+  letter-spacing: normal;
+  font-weight: 400;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--text-dim);
+  opacity: 0.8;
+}
+
 .step h2 .step-number {
   display: inline-flex;
   align-items: center;

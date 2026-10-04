@@ -82,26 +82,38 @@ export function BlockPickerStep({
             style={{ marginBottom: 10, width: 220 }}
           />
           {allBlocks.length === 0 ? (
-            <p className="error-text">
-              No buildable blocks were found with the current options — try relaxing one of the toggles
-              below.
-            </p>
+            isReady ? (
+              <p className="error-text">
+                No buildable blocks were found with the current options — try relaxing one of the toggles
+                below.
+              </p>
+            ) : (
+              <p className="hint-text">Upload a jar or resource pack above to see its blocks here.</p>
+            )
           ) : (
-            <div className="block-grid">
-              {visibleBlocks.map((block) => (
-                <button
-                  key={block.blockId}
-                  type="button"
-                  className="block-tile"
-                  data-selected={block.blockId === selectedBlockId}
-                  onClick={() => onSelectBlock(block.blockId)}
-                  title={`${block.resourceLocation} · texture variance ${block.textureVariance.toFixed(4)} (how busy/noisy its texture is — a flatter texture, lower here, is a cleaner stand-in for a solid color; see the "prefer clean textures" option in step 3)`}
-                >
-                  <span className="swatch" style={{ background: swatchColor(block.color) }} />
-                  <span className="label">{block.blockId}</span>
-                </button>
-              ))}
-            </div>
+            <>
+              {search.trim() !== "" && (
+                <p className="hint-text" style={{ marginBottom: 8 }}>
+                  {visibleBlocks.length} of {allBlocks.length} block{allBlocks.length === 1 ? "" : "s"} match
+                  {visibleBlocks.length === 0 ? ` — nothing found for "${search.trim()}"` : ""}
+                </p>
+              )}
+              <div className="block-grid">
+                {visibleBlocks.map((block) => (
+                  <button
+                    key={block.blockId}
+                    type="button"
+                    className="block-tile"
+                    data-selected={block.blockId === selectedBlockId}
+                    onClick={() => onSelectBlock(block.blockId)}
+                    title={`${block.resourceLocation} · texture variance ${block.textureVariance.toFixed(4)} (how busy/noisy its texture is — a flatter texture, lower here, is a cleaner stand-in for a solid color; see the "prefer clean textures" option in step 3)`}
+                  >
+                    <span className="swatch" style={{ background: swatchColor(block.color) }} />
+                    <span className="label">{block.blockId}</span>
+                  </button>
+                ))}
+              </div>
+            </>
           )}
 
           {axisVariantBlocks.length > 0 && (
