@@ -34,14 +34,51 @@ item itself for which.
 - [ ] 3.1 Real Litematica fixture — needs you, not me
 - [x] 3.2 README false claim fix
 - [ ] 3.3 In-game orientation verification — needs you, not me
-- [ ] 4.1 Preview-only fast path
+- [ ] 4.1 Preview-only fast path — investigated, deliberately not building the
+      full version; see note below the checklist
 - [x] 4.2 Stop destroying the result on every tweak — `App.tsx`'s `resultIsStale`
 - [x] 4.3 Install instructions — `ResultPanel.tsx`
 - [x] 4.4 Broken guards (warning threshold, Int32 overflow cap) — `ScaleAndOptionsStep.tsx`
 - [x] 4.5 Smaller UX repairs (empty states, search feedback, localStorage persistence, confirm guard, selected-block context) — tooltip-to-visible-text still open
 - [x] Tier 5: `unzipSync` filter — `archiveReader.ts`
-- [ ] Tier 5: everything else (palette memoization, blockstate memoization, model
-      JSON cache, IndexedDB hardening, gzip, vitest `.tsx` config)
+- [x] Tier 5: palette memory fix — `palette.ts`'s `screenedTextureMean`/
+      `meanSquaredDistanceFrom` stream per-pixel Oklab instead of materializing
+      a LinearRgb[] and an Oklab[] per texture (the 2.2 Jensen-gap fix had added
+      a second full array pass on top of the original one)
+- [x] Tier 5: model/blockstate JSON caching — `modelResolver.ts`'s
+      `memoizedByArchive`, scoped per archive instance via `WeakMap`
+- [x] Tier 5: IndexedDB hardening — `archiveCache.ts` now has an `onblocked`
+      handler and validates a read's shape instead of casting it blind;
+      `blockStatePaletteEntryFor` memoization and the no-user-signal-on-
+      quota-exceeded gap were investigated and left as is (see commit)
+- [x] Tier 5: gzip server responses — `server.ts`, verified live (293KB to
+      95KB on the JS bundle, byte-identical after decompression)
+- [ ] Tier 5: vitest `.tsx` config (needs real RTL/jsdom test-writing to pay
+      off, not just a config flip — not attempted this pass)
+
+**On 4.1** — benchmarked `buildVoxelGrid` directly (40-candidate palette, 16px
+source texture) before deciding whether to build it:
+
+| edgeBlocks | hollow | solid-full |
+|---|---|---|
+| 16 | 12.7ms | 5.0ms |
+| 32 | 5.5ms | 15.8ms |
+| 64 | 21.6ms | 84.0ms |
+| 128 | 37.1ms | **547.0ms** |
+
+At this app's actual usage range (16-32, hollow by default) a build is already
+imperceptible — there is no slowness for the fast path to fix. The one case where
+it would matter, 128³ solid-full, is both a deliberately-opted-into combination
+(the fill-style picker itself warns "much more material") and already caught by
+the ≥1,000,000-voxel warning added in 4.4 before the user commits to it. Building
+the fast path for real would mean decoupling the preview from the Build button
+entirely — async texture-loading state in `App.tsx`, a UI reflow, new interaction
+with 4.2's just-shipped staleness model — real scope and risk for a case this
+plan's own "Deliberately not doing" section already resolves differently ("Web
+worker / progress bar / cancellation... justified only above ~100k voxels... fix
+the misconfigured warning and move on" — which is exactly what 4.4 did). Not
+building it; revisit only if large solid builds become an actual reported pain
+point.
 
 ### Three facts that drove the prioritisation
 

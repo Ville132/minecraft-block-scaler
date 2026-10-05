@@ -10,6 +10,7 @@ import { createReadStream, existsSync, statSync } from "node:fs";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { extname, join, normalize } from "node:path";
 import { fileURLToPath } from "node:url";
+import { createGzip } from "node:zlib";
 
 // ".." because the compiled server lives in dist-server/, a sibling of
 // dist/, not inside it (see tsconfig.server.json's outDir).
@@ -27,6 +28,14 @@ const CONTENT_TYPE_BY_EXTENSION: Readonly<Record<string, string>> = {
   ".woff2": "font/woff2",
 };
 
+/** Worth gzipping: plain text formats, where it typically shaves 70-80% off. `.png`/`.ico`/`.woff2` are already-compressed binary formats — gzipping them again wastes CPU for essentially no size reduction, sometimes a slight increase. */
+const COMPRESSIBLE_EXTENSIONS = new Set([".html", ".js", ".css", ".json", ".svg"]);
+
+function acceptsGzip(request: IncomingMessage): boolean {
+  const acceptEncoding = request.headers["accept-encoding"];
+  return typeof acceptEncoding === "string" && acceptEncoding.includes("gzip");
+}
+
 /** Resolves a request path to a file under `dist/`, falling back to `index.html` for client-side routes and refusing any path that escapes `dist/`. */
 function resolveRequestedFile(requestUrl: string): string {
   const decodedPath = decodeURIComponent(requestUrl.split("?")[0] ?? "/");
@@ -38,14 +47,25 @@ function resolveRequestedFile(requestUrl: string): string {
 
 function handleRequest(request: IncomingMessage, response: ServerResponse): void {
   const filePath = resolveRequestedFile(request.url ?? "/");
-  const contentType = CONTENT_TYPE_BY_EXTENSION[extname(filePath)] ?? "application/octet-stream";
+  const extension = extname(filePath);
+  const contentType = CONTENT_TYPE_BY_EXTENSION[extension] ?? "application/octet-stream";
   // Hashed asset filenames (Vite's default) are safe to cache
   // indefinitely; index.html is not, since it is what points at them.
   const cacheControl = filePath.endsWith("index.html")
     ? "no-cache"
     : "public, max-age=31536000, immutable";
 
-  response.writeHead(200, { "Content-Type": contentType, "Cache-Control": cacheControl });
+  const isCompressible = COMPRESSIBLE_EXTENSIONS.has(extension);
+  const shouldGzip = isCompressible && acceptsGzip(request);
+  const headers: Record<string, string> = { "Content-Type": contentType, "Cache-Control": cacheControl };
+  // Only meaningful for a file type whose response bytes can actually
+  // differ by Accept-Encoding — an always-raw type like .png has
+  // nothing to Vary on, so leaving the header off it is more accurate,
+  // not just shorter.
+  if (isCompressible) headers.Vary = "Accept-Encoding";
+  if (shouldGzip) headers["Content-Encoding"] = "gzip";
+
+  response.writeHead(200, headers);
   const fileStream = createReadStream(filePath);
   // Without this, a stream error (e.g. the file vanishing between the
   // existsSync check and this read) would surface as an uncaught
@@ -56,7 +76,18 @@ function handleRequest(request: IncomingMessage, response: ServerResponse): void
     if (!response.headersSent) response.writeHead(500);
     response.end("Internal server error");
   });
-  fileStream.pipe(response);
+
+  if (!shouldGzip) {
+    fileStream.pipe(response);
+    return;
+  }
+  const gzipStream = createGzip();
+  gzipStream.on("error", (error) => {
+    console.error(`Failed to gzip '${filePath}':`, error);
+    if (!response.headersSent) response.writeHead(500);
+    response.end("Internal server error");
+  });
+  fileStream.pipe(gzipStream).pipe(response);
 }
 
 createServer(handleRequest).listen(PORT, () => {

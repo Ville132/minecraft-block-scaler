@@ -418,3 +418,33 @@ describe("resolveAxisVariantCubeModel", () => {
     expect(resolveAxisVariantCubeModel(archive, "oak_log", "sideways")).toBeUndefined();
   });
 });
+
+describe("per-archive model/blockstate caching", () => {
+  it("resolves the same block identically on a second call against the same archive", () => {
+    const archive = cubeAllArchive();
+    const first = resolveCanonicalVariantCubeModel(archive, "cobblestone");
+    const second = resolveCanonicalVariantCubeModel(archive, "cobblestone");
+    expect(second).toEqual(first);
+  });
+
+  it("does not leak a cached result from one archive into a different archive instance, even for the same block id", () => {
+    const archiveA = cubeAllArchive(); // cobblestone -> minecraft:block/cobblestone
+    const archiveB = cubeAllArchive({
+      "assets/minecraft/models/block/cobblestone.json": {
+        parent: "minecraft:block/cube_all",
+        textures: { all: "minecraft:block/a_totally_different_texture" },
+      },
+    });
+
+    const resultA = resolveCanonicalVariantCubeModel(archiveA, "cobblestone");
+    const resultB = resolveCanonicalVariantCubeModel(archiveB, "cobblestone");
+
+    expect(resultA?.model.faceTextureIds.up).toBe("block/cobblestone");
+    expect(resultB?.model.faceTextureIds.up).toBe("block/a_totally_different_texture");
+
+    // Re-resolving A after B confirms A's own cache wasn't overwritten either.
+    expect(resolveCanonicalVariantCubeModel(archiveA, "cobblestone")?.model.faceTextureIds.up).toBe(
+      "block/cobblestone",
+    );
+  });
+});

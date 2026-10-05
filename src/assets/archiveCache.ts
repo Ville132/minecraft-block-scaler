@@ -25,14 +25,44 @@ export interface CachedArchive {
   readonly savedAt: number;
 }
 
+/** Runtime check behind {@link loadCachedArchive}'s read — a stored value this app itself never wrote (a future, incompatible app version; manual tampering with devtools) is treated the same as nothing being cached at all, rather than trusted on a bare type cast. */
+function isCachedArchive(value: unknown): value is CachedArchive {
+  if (typeof value !== "object" || value === null) return false;
+  const candidate = value as Record<string, unknown>;
+  return (
+    typeof candidate.fileName === "string" &&
+    candidate.bytes instanceof Uint8Array &&
+    typeof candidate.savedAt === "number"
+  );
+}
+
 function openDatabase(): Promise<IDBDatabase> {
   return new Promise((resolve, reject) => {
     const request = indexedDB.open(DATABASE_NAME, DATABASE_VERSION);
     request.onupgradeneeded = () => {
       request.result.createObjectStore(STORE_NAME);
     };
-    request.onsuccess = () => resolve(request.result);
+    request.onsuccess = () => {
+      const db = request.result;
+      // Lets this connection get out of a FUTURE version bump's way
+      // instead of indefinitely blocking it — every operation in this
+      // module already closes its own connection within one
+      // open-transaction-close cycle, so this is cheap defense-in-depth
+      // (a future refactor that holds a connection open longer, or a
+      // close() that doesn't run because of an unexpected throw) rather
+      // than a path this app's current usage actually exercises.
+      db.onversionchange = () => db.close();
+      resolve(db);
+    };
     request.onerror = () => reject(request.error ?? new Error("Could not open the archive cache database"));
+    // Without this, a blocked upgrade (another tab holding an open
+    // connection at an older version) would leave this promise forever
+    // unsettled — onupgradeneeded/onsuccess/onerror simply never fire
+    // until the blocking connection closes. Failing loudly instead
+    // means a caller's await actually returns (as a rejection, which
+    // every call site already treats as "caching didn't work this
+    // time") rather than hanging.
+    request.onblocked = () => reject(new Error("Could not open the archive cache database (blocked by another open tab)"));
   });
 }
 
@@ -52,14 +82,17 @@ export async function saveCachedArchive(fileName: string, bytes: Uint8Array): Pr
   }
 }
 
-/** Returns the cached archive, or `undefined` if nothing has been cached yet — an expected, common state (e.g. a first visit), not an error. */
+/** Returns the cached archive, or `undefined` if nothing has been cached yet (or what's stored doesn't look like a `CachedArchive` at all — see {@link isCachedArchive}) — both are an expected, common state (e.g. a first visit), not an error. */
 export async function loadCachedArchive(): Promise<CachedArchive | undefined> {
   const db = await openDatabase();
   try {
     return await new Promise<CachedArchive | undefined>((resolve, reject) => {
       const transaction = db.transaction(STORE_NAME, "readonly");
       const request = transaction.objectStore(STORE_NAME).get(CURRENT_ARCHIVE_KEY);
-      request.onsuccess = () => resolve(request.result as CachedArchive | undefined);
+      request.onsuccess = () => {
+        const stored: unknown = request.result;
+        resolve(isCachedArchive(stored) ? stored : undefined);
+      };
       request.onerror = () => reject(request.error ?? new Error("Could not load the cached archive"));
     });
   } finally {

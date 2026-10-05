@@ -15,14 +15,7 @@ import {
 } from "../assets/modelResolver.ts";
 import { requiresScarceIngredient } from "../assets/recipes.ts";
 import { decodePngTexture, type DecodedTexture } from "../assets/textureDecoder.ts";
-import {
-  averageOklab,
-  linearRgbToOklab,
-  oklabDistanceSquared,
-  rgb8ToLinearRgb,
-  type LinearRgb,
-  type Oklab,
-} from "./color.ts";
+import { averageOklab, linearRgbToOklab, oklabDistanceSquared, rgb8ToLinearRgb, type Oklab } from "./color.ts";
 
 export type CostTier = "common" | "precious";
 
@@ -340,21 +333,45 @@ export type TextureDecoder = (pngBytes: Uint8Array) => Promise<DecodedTexture>;
 /** Below this alpha, a pixel is treated as genuinely translucent and disqualifies its texture. Short of 255 on purpose: real resource packs sometimes export a handful of pixels at 254/253 from lossy rounding in an otherwise fully opaque texture, which full-opacity-only would reject for no visible reason. */
 const OPAQUE_ALPHA_THRESHOLD = 250;
 
+/** One raw pixel of a decoded texture, read straight off its RGBA buffer and converted to Oklab — a small free function rather than a stored array entry, so scanning a texture twice (mean, then variance-from-that-mean — see {@link representativeAppearance}) never needs to hold more than one pixel's worth of converted color at a time. */
+function pixelOklabAt(texture: DecodedTexture, pixelStart: number): Oklab {
+  return linearRgbToOklab(
+    rgb8ToLinearRgb({
+      r: texture.pixels[pixelStart]!,
+      g: texture.pixels[pixelStart + 1]!,
+      b: texture.pixels[pixelStart + 2]!,
+    }),
+  );
+}
+
 /**
- * Every opaque pixel's own linear-light color for one texture, or
- * `undefined` if the texture is disqualified: animated (an `.mcmeta`
- * file sits beside it), its decoded pixels are not square (a strong
- * sign of a stacked animation filmstrip), or any pixel is not opaque
- * enough (see {@link OPAQUE_ALPHA_THRESHOLD}). Either case disqualifies
- * the WHOLE texture rather than averaging just the remaining pixels,
- * since a partial, unrepresentative average would be a worse match than
- * simply not offering the block at all.
+ * One texture's own Oklab mean, or `undefined` if the texture is
+ * disqualified: animated (an `.mcmeta` file sits beside it), its
+ * decoded pixels are not square (a strong sign of a stacked animation
+ * filmstrip), or any pixel is not opaque enough (see
+ * {@link OPAQUE_ALPHA_THRESHOLD}). Either case disqualifies the WHOLE
+ * texture rather than averaging just the remaining pixels, since a
+ * partial, unrepresentative average would be a worse match than simply
+ * not offering the block at all.
+ *
+ * Streams the mean (a running per-channel sum divided by count at the
+ * end — identical arithmetic to, and so identical floating-point
+ * results as, averaging a materialized array in the same pixel order)
+ * rather than building a per-pixel array first: a 512px HD texture is
+ * 262,144 pixels, and this runs once per distinct texture of every
+ * eligible candidate on every single `buildPalette`/
+ * `listAxisVariantBlocks` call (i.e. every options toggle) — holding a
+ * quarter-million short-lived objects per texture, repeatedly, is real
+ * memory pressure a running sum has no reason to pay. The decoded
+ * texture itself is still returned (not re-fetched) so
+ * {@link representativeAppearance} can scan the same raw bytes a second
+ * time for variance, once the cross-texture `color` it needs is known.
  */
-async function opaqueTexturePixels(
+async function screenedTextureMean(
   archive: MinecraftArchive,
   textureId: string,
   decodeTexture: TextureDecoder,
-): Promise<readonly LinearRgb[] | undefined> {
+): Promise<{ readonly decoded: DecodedTexture; readonly meanOklab: Oklab } | undefined> {
   if (archive.getFile(textureMetaPath(textureId)) !== undefined) return undefined;
 
   const bytes = archive.getFile(texturePath(textureId));
@@ -363,19 +380,31 @@ async function opaqueTexturePixels(
   const decoded = await decodeTexture(bytes);
   if (decoded.width !== decoded.height) return undefined;
 
-  const pixels: LinearRgb[] = [];
+  let sumL = 0;
+  let sumA = 0;
+  let sumB = 0;
+  let pixelCount = 0;
   for (let pixelStart = 0; pixelStart < decoded.pixels.length; pixelStart += 4) {
     const alpha = decoded.pixels[pixelStart + 3]!;
     if (alpha < OPAQUE_ALPHA_THRESHOLD) return undefined;
-    pixels.push(
-      rgb8ToLinearRgb({
-        r: decoded.pixels[pixelStart]!,
-        g: decoded.pixels[pixelStart + 1]!,
-        b: decoded.pixels[pixelStart + 2]!,
-      }),
-    );
+    const oklab = pixelOklabAt(decoded, pixelStart);
+    sumL += oklab.L;
+    sumA += oklab.a;
+    sumB += oklab.b;
+    pixelCount++;
   }
-  return pixels;
+  return { decoded, meanOklab: { L: sumL / pixelCount, a: sumA / pixelCount, b: sumB / pixelCount } };
+}
+
+/** Mean squared Oklab distance of every pixel of an already-screened (opaque, square) texture from `targetColor` — a second streaming pass over the same raw buffer {@link screenedTextureMean} decoded, not a stored per-pixel array (same reasoning as that function's own doc comment). */
+function meanSquaredDistanceFrom(texture: DecodedTexture, targetColor: Oklab): number {
+  let sumSquaredDistance = 0;
+  let pixelCount = 0;
+  for (let pixelStart = 0; pixelStart < texture.pixels.length; pixelStart += 4) {
+    sumSquaredDistance += oklabDistanceSquared(pixelOklabAt(texture, pixelStart), targetColor);
+    pixelCount++;
+  }
+  return sumSquaredDistance / pixelCount;
 }
 
 export interface BlockAppearance {
@@ -426,20 +455,16 @@ async function representativeAppearance(
   decodeTexture: TextureDecoder,
 ): Promise<BlockAppearance | undefined> {
   const distinctTextureIds = new Set(Object.values(model.faceTextureIds));
-  const pixelsByTexture: (readonly LinearRgb[])[] = [];
+  const screenedTextures: { readonly decoded: DecodedTexture; readonly meanOklab: Oklab }[] = [];
   for (const textureId of distinctTextureIds) {
-    const pixels = await opaqueTexturePixels(archive, textureId, decodeTexture);
-    if (pixels === undefined) return undefined;
-    pixelsByTexture.push(pixels);
+    const screened = await screenedTextureMean(archive, textureId, decodeTexture);
+    if (screened === undefined) return undefined;
+    screenedTextures.push(screened);
   }
 
-  const perTexturePixelOklabs = pixelsByTexture.map((pixels) => pixels.map((pixel) => linearRgbToOklab(pixel)));
-  const color = averageOklab(perTexturePixelOklabs.map((pixelOklabs) => averageOklab(pixelOklabs)));
+  const color = averageOklab(screenedTextures.map((texture) => texture.meanOklab));
 
-  const perTextureVariances = perTexturePixelOklabs.map((pixelOklabs) => {
-    const squaredDistances = pixelOklabs.map((pixelOklab) => oklabDistanceSquared(pixelOklab, color));
-    return squaredDistances.reduce((sum, value) => sum + value, 0) / squaredDistances.length;
-  });
+  const perTextureVariances = screenedTextures.map((texture) => meanSquaredDistanceFrom(texture.decoded, color));
   const variance = perTextureVariances.reduce((sum, value) => sum + value, 0) / perTextureVariances.length;
 
   return { color, variance };

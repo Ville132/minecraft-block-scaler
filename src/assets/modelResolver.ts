@@ -73,6 +73,44 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
+/**
+ * Caches `compute()`'s result under (`archive`, `key`), scoped to that
+ * one archive instance via a `WeakMap` so a second, different uploaded
+ * archive starts with a clean cache rather than ever seeing a stale
+ * entry from the first — and so the old archive's cache is free to be
+ * garbage-collected once nothing else references it, with no explicit
+ * invalidation this module has to remember to call.
+ *
+ * WHY this exists: resolving one candidate block's model routinely
+ * walks the SAME shared parent files (`block/cube_all.json`,
+ * `block/cube.json`, ...) other candidates already walked — `buildPalette`
+ * calls this resolver once per eligible candidate, and most plain full-
+ * cube blocks in a real jar share that exact parent chain. Re-parsing
+ * the same few-hundred-byte JSON file a few hundred times per
+ * `buildPalette` call is pure waste; this makes it happen once.
+ *
+ * Caches a failed lookup (`compute()` returning `undefined`) too, not
+ * just a successful one — `cache.has(key)` is checked explicitly rather
+ * than relying on a truthy `get`, which is what makes "already tried,
+ * genuinely unresolvable" distinguishable from "never tried yet".
+ */
+function memoizedByArchive<T>(
+  cacheByArchive: WeakMap<MinecraftArchive, Map<string, T>>,
+  archive: MinecraftArchive,
+  key: string,
+  compute: () => T,
+): T {
+  let cache = cacheByArchive.get(archive);
+  if (cache === undefined) {
+    cache = new Map();
+    cacheByArchive.set(archive, cache);
+  }
+  if (cache.has(key)) return cache.get(key)!;
+  const value = compute();
+  cache.set(key, value);
+  return value;
+}
+
 function parseModelJson(bytes: Uint8Array): ParsedModel | undefined {
   let parsed: unknown;
   try {
@@ -133,6 +171,16 @@ function parseVector3(value: unknown): readonly [number, number, number] | undef
   return [x, y, z];
 }
 
+const modelCacheByArchive = new WeakMap<MinecraftArchive, Map<string, ParsedModel | undefined>>();
+
+/** The parsed, cached model at `normalizedId` — see {@link memoizedByArchive}. */
+function getCachedModel(archive: MinecraftArchive, normalizedId: string): ParsedModel | undefined {
+  return memoizedByArchive(modelCacheByArchive, archive, normalizedId, () => {
+    const bytes = archive.getFile(modelPath(normalizedId));
+    return bytes === undefined ? undefined : parseModelJson(bytes);
+  });
+}
+
 /** Reads one model and its full parent chain, root-first (so later entries are more specific and should override earlier ones when merging textures). */
 function readParentChainRootFirst(
   archive: MinecraftArchive,
@@ -149,9 +197,7 @@ function readParentChainRootFirst(
     }
     seenModelIds.add(normalizedId);
 
-    const bytes = archive.getFile(modelPath(normalizedId));
-    if (bytes === undefined) return undefined;
-    const model = parseModelJson(bytes);
+    const model = getCachedModel(archive, normalizedId);
     if (model === undefined) return undefined;
 
     chainLeafToRoot.push(model);
@@ -207,21 +253,25 @@ function extractVariantReference(variant: unknown): VariantReference | undefined
   return { modelId: entry.model, xDegrees, yDegrees };
 }
 
-/** Reads `blockId`'s blockstates file and returns its `variants` map, or `undefined` if the file is missing, malformed, or not `variants`-shaped (e.g. a `multipart` blockstate — out of scope). Shared by every resolver below. */
+const variantsCacheByArchive = new WeakMap<MinecraftArchive, Map<string, Record<string, unknown> | undefined>>();
+
+/** Reads `blockId`'s blockstates file and returns its `variants` map, or `undefined` if the file is missing, malformed, or not `variants`-shaped (e.g. a `multipart` blockstate — out of scope). Shared by every resolver below; cached per {@link memoizedByArchive} since `hasAxisVariants` and both cube-model resolvers each call this for the same `blockId`. */
 function readVariantsMap(archive: MinecraftArchive, blockId: string): Record<string, unknown> | undefined {
-  const blockstateBytes = archive.getFile(blockstatePath(blockId));
-  if (blockstateBytes === undefined) return undefined;
+  return memoizedByArchive(variantsCacheByArchive, archive, blockId, () => {
+    const blockstateBytes = archive.getFile(blockstatePath(blockId));
+    if (blockstateBytes === undefined) return undefined;
 
-  let blockstateJson: unknown;
-  try {
-    blockstateJson = JSON.parse(new TextDecoder("utf-8").decode(blockstateBytes));
-  } catch {
-    return undefined;
-  }
-  if (!isPlainObject(blockstateJson)) return undefined;
+    let blockstateJson: unknown;
+    try {
+      blockstateJson = JSON.parse(new TextDecoder("utf-8").decode(blockstateBytes));
+    } catch {
+      return undefined;
+    }
+    if (!isPlainObject(blockstateJson)) return undefined;
 
-  const variants = blockstateJson.variants;
-  return isPlainObject(variants) ? variants : undefined;
+    const variants = blockstateJson.variants;
+    return isPlainObject(variants) ? variants : undefined;
+  });
 }
 
 /**
