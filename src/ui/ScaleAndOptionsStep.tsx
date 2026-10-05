@@ -205,8 +205,8 @@ export function ScaleAndOptionsStep({
       </div>
 
       <div className="fill-style-row">
-        {VARIANCE_WEIGHT_CHOICES.map(({ weight, label, hint }) => (
-          <label key={weight} title={hint}>
+        {VARIANCE_WEIGHT_CHOICES.map(({ weight, label }) => (
+          <label key={weight}>
             <input
               type="radio"
               name="varianceWeight"
@@ -217,12 +217,13 @@ export function ScaleAndOptionsStep({
           </label>
         ))}
       </div>
+      {/* Was a title= tooltip on each radio — invisible on touch and unreachable by keyboard (BACKLOG.md 4.5). Shows the SELECTED option's own explanation rather than all three at once, so it stays useful context instead of a wall of text covering choices not even picked. */}
+      <p className="hint-text">
+        {VARIANCE_WEIGHT_CHOICES.find((choice) => choice.weight === varianceWeight)?.hint}
+      </p>
 
       <div className="options-row">
-        <label
-          className="checkbox"
-          title="Floyd-Steinberg dithering: lets neighbouring voxels alternate between two blocks so an area's AVERAGE color matches the source more closely, instead of every voxel in that area flatly picking the same one nearest block. More accurate from a distance; speckled up close."
-        >
+        <label className="checkbox">
           <input
             type="checkbox"
             checked={ditherEnabled}
@@ -231,6 +232,11 @@ export function ScaleAndOptionsStep({
           Smooth color blending (dithering)
         </label>
       </div>
+      <p className="hint-text">
+        Floyd-Steinberg dithering: lets neighbouring voxels alternate between two blocks so an area's AVERAGE
+        color matches the source more closely, instead of every voxel in that area flatly picking the same one
+        nearest block. More accurate from a distance; speckled up close.
+      </p>
 
       <div className="options-row" style={{ alignItems: "center" }}>
         <label

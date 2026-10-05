@@ -39,7 +39,7 @@ item itself for which.
 - [x] 4.2 Stop destroying the result on every tweak — `App.tsx`'s `resultIsStale`
 - [x] 4.3 Install instructions — `ResultPanel.tsx`
 - [x] 4.4 Broken guards (warning threshold, Int32 overflow cap) — `ScaleAndOptionsStep.tsx`
-- [x] 4.5 Smaller UX repairs (empty states, search feedback, localStorage persistence, confirm guard, selected-block context) — tooltip-to-visible-text still open
+- [x] 4.5 Smaller UX repairs (empty states, search feedback, localStorage persistence, confirm guard, selected-block context, variance-weight/dithering tooltip-to-visible-text) — the per-block-tile texture-variance tooltip was deliberately left as a tooltip (converting it would repeat a technical paragraph across every tile in the grid)
 - [x] Tier 5: `unzipSync` filter — `archiveReader.ts`
 - [x] Tier 5: palette memory fix — `palette.ts`'s `screenedTextureMean`/
       `meanSquaredDistanceFrom` stream per-pixel Oklab instead of materializing
