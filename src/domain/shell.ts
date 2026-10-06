@@ -13,14 +13,23 @@ import type { DecodedTexture } from "../assets/textureDecoder.ts";
 import {
   averageLinearRgb,
   averageOklab,
-  findBestMatch,
+  createMatcher,
+  DEFAULT_COLOR_TOLERANCE,
   linearRgbToOklab,
   rgb8ToLinearRgb,
   type LinearRgb,
+  type MatchOptions,
   type Oklab,
+  type ScoredCandidate,
 } from "./color.ts";
-import { assessContrastHeadroom, lightnessRangeOf, stretchLightness, type ContrastHeadroom, type LightnessRange } from "./contrast.ts";
-import { ditherGrid, type DitherOptions } from "./dither.ts";
+import {
+  amplifyLightness,
+  assertContrastGain,
+  assessContrastHeadroom,
+  DEFAULT_CONTRAST_GAIN,
+  type ContrastHeadroom,
+} from "./contrast.ts";
+import { ditherGrid } from "./dither.ts";
 import {
   CUBE_FACE_DIRECTIONS,
   faceForOrientation,
@@ -29,8 +38,6 @@ import {
   type CubeFaceDirection,
 } from "./faces.ts";
 import type { PaletteBlock } from "./palette.ts";
-
-export type { DitherOptions } from "./dither.ts";
 
 /**
  * `"hollow"` fills only the outer shell (see {@link isShellVoxel}).
@@ -54,16 +61,6 @@ export interface Voxel {
   readonly paletteBlock: PaletteBlock;
 }
 
-/**
- * The default cost of a candidate's own texture noise, in `findBestMatch`'s
- * `varianceWeight` terms: `1` is the literal, unscaled bias-variance sum
- * (see `color.ts`'s `findBestMatch`) — exactly how much a candidate's own
- * busyness would actually be expected to blur the pixel it's standing in
- * for, no extra weighting added. The principled, no-magic-number choice,
- * not a tuned constant.
- */
-export const DEFAULT_VARIANCE_WEIGHT = 1;
-
 export interface BuildVoxelGridParams {
   readonly edgeBlocks: number;
   readonly fillStyle: FillStyle;
@@ -71,10 +68,12 @@ export interface BuildVoxelGridParams {
   readonly sourceFaceTextures: Readonly<Record<CubeFaceDirection, DecodedTexture>>;
   /** Candidate replacement blocks (see `palette.ts`); must be non-empty. */
   readonly palette: readonly PaletteBlock[];
-  /** How strongly to penalize a visually busy candidate block as a single-color stand-in — see `color.ts`'s `findBestMatch`. `0` reproduces plain nearest-color matching. Defaults to {@link DEFAULT_VARIANCE_WEIGHT}. */
-  readonly varianceWeight?: number;
-  /** Enables Floyd-Steinberg error-diffusion dithering (see `dither.ts`) when present; omitted entirely disables it, reproducing plain per-pixel nearest-match exactly as before dithering existed. Off by default — dithering trades a flat, uniformly-off look for a more accurate one from a distance at the cost of a speckled look up close, and that tradeoff is the user's call. */
-  readonly dither?: DitherOptions;
+  /** How much worse than the single nearest color a candidate block may be and still win on having a flatter texture — see `color.ts`'s `MatchOptions.colorTolerance`. `0` reproduces plain nearest-color matching. Defaults to {@link DEFAULT_COLOR_TOLERANCE}. */
+  readonly colorTolerance?: number;
+  /** Opt-in contrast enhancement: how much to exaggerate each face's own light/dark pattern around that face's own average lightness — see `contrast.ts`'s `amplifyLightness`. `1` (the default) means none: every pixel matches its own true color. A face's average color never moves at any gain. Must be finite and at least 1. */
+  readonly contrastGain?: number;
+  /** Enables Floyd-Steinberg error-diffusion dithering (see `dither.ts`) when `true`; `false` or omitted disables it, reproducing plain per-pixel nearest-match exactly as before dithering existed. Off by default — dithering trades a flat, uniformly-off look for a more accurate one from a distance at the cost of a speckled look up close, and that tradeoff is the user's call. */
+  readonly dither?: boolean;
   /** Required when `fillStyle` is `"solid-cheap-core"` (and ignored otherwise): the single block every interior voxel is filled with, skipping color-matching for that voxel entirely. */
   readonly interiorFillBlock?: PaletteBlock;
 }
@@ -273,33 +272,70 @@ export function pixelRegionForVoxelCoord(
   return { start, endExclusive: Math.max(start + 1, naiveEnd) };
 }
 
-/** Every pixel of `texture`, converted to Oklab — the full-resolution color population behind this module's own per-face contrast stretch and `assessReplicaContrastHeadroom`, independent of `edgeBlocks` or how coarsely a particular build happens to sample this same texture (see `pixelRegionForVoxelCoord`). Alpha is ignored, same trust-the-source-is-opaque reasoning as {@link averageColorInRegion} below. */
-function allPixelOklabColors(texture: DecodedTexture): Oklab[] {
-  const colors: Oklab[] = [];
-  for (let i = 0; i < texture.pixels.length; i += 4) {
-    colors.push(
-      linearRgbToOklab(
-        rgb8ToLinearRgb({ r: texture.pixels[i]!, g: texture.pixels[i + 1]!, b: texture.pixels[i + 2]! }),
-      ),
-    );
-  }
-  return colors;
+interface LightnessStats {
+  /** Mean Oklab lightness over every pixel — what contrast enhancement amplifies AROUND. */
+  readonly mean: number;
+  /** Brightest pixel's lightness minus darkest pixel's — how much internal light/dark pattern the texture has. */
+  readonly span: number;
 }
 
 /**
- * Compares the source block's own per-face lightness ranges against
- * what `palette` can reach — see `contrast.ts`'s `assessContrastHeadroom`
- * for what the result means. A thin, texture-aware wrapper: this module
- * owns reading pixels out of a `DecodedTexture`, `contrast.ts` owns the
- * pure color-space math, and this is where the two meet.
+ * One streaming pass over every pixel of `texture`, for its mean and
+ * span of Oklab lightness — no per-pixel array, same reasoning as
+ * `palette.ts`'s `screenedTextureMean`. Full resolution, independent of
+ * `edgeBlocks` or how coarsely a particular build happens to sample this
+ * same texture (see {@link pixelRegionForVoxelCoord}). Alpha is ignored,
+ * same trust-the-source-is-opaque reasoning as {@link averageColorInRegion}.
+ */
+function lightnessStatsOf(texture: DecodedTexture): LightnessStats {
+  let sum = 0;
+  let darkest = Infinity;
+  let brightest = -Infinity;
+  let pixelCount = 0;
+  for (let i = 0; i < texture.pixels.length; i += 4) {
+    const lightness = linearRgbToOklab(
+      rgb8ToLinearRgb({ r: texture.pixels[i]!, g: texture.pixels[i + 1]!, b: texture.pixels[i + 2]! }),
+    ).L;
+    sum += lightness;
+    if (lightness < darkest) darkest = lightness;
+    if (lightness > brightest) brightest = lightness;
+    pixelCount++;
+  }
+  return { mean: sum / pixelCount, span: brightest - darkest };
+}
+
+/** {@link lightnessStatsOf} for each face, scanning a texture that several faces share only once — every `cube_all` block hands all six faces the same decoded texture object (see `ui/buildReplica.ts`). */
+function lightnessStatsByFace(
+  sourceFaceTextures: Readonly<Record<CubeFaceDirection, DecodedTexture>>,
+): ReadonlyMap<CubeFaceDirection, LightnessStats> {
+  const statsByTexture = new Map<DecodedTexture, LightnessStats>();
+  return new Map(
+    CUBE_FACE_DIRECTIONS.map((direction) => {
+      const texture = sourceFaceTextures[direction];
+      let stats = statsByTexture.get(texture);
+      if (stats === undefined) {
+        stats = lightnessStatsOf(texture);
+        statsByTexture.set(texture, stats);
+      }
+      return [direction, stats];
+    }),
+  );
+}
+
+/**
+ * Whether any face of the source block has a light/dark pattern faint
+ * enough that contrast enhancement would help — see `contrast.ts`'s
+ * `assessContrastHeadroom` for what the result means. A thin, texture-
+ * aware wrapper: this module owns reading pixels out of a
+ * `DecodedTexture`, `contrast.ts` owns the judgement, and this is where
+ * the two meet. Takes no palette: whether a face is faint is a property
+ * of the source alone.
  */
 export function assessReplicaContrastHeadroom(
   sourceFaceTextures: Readonly<Record<CubeFaceDirection, DecodedTexture>>,
-  palette: readonly PaletteBlock[],
 ): ContrastHeadroom {
-  const sourceColorsByFace = CUBE_FACE_DIRECTIONS.map((direction) => allPixelOklabColors(sourceFaceTextures[direction]));
-  const paletteColors = palette.map((block) => block.color);
-  return assessContrastHeadroom(sourceColorsByFace, paletteColors);
+  const spans = [...lightnessStatsByFace(sourceFaceTextures).values()].map((stats) => stats.span);
+  return assessContrastHeadroom(spans);
 }
 
 /** The linear-light average color across a rectangular pixel region of a decoded texture. Alpha is ignored: unlike `palette.ts`'s candidates, the source block's texture is trusted to be opaque by construction (see this module's header comment). */
@@ -366,6 +402,12 @@ function distinctPixelRegions(edgeBlocks: number, textureSize: number): PixelReg
   return regions;
 }
 
+/** One face's contrast enhancement: its own mean lightness (what to amplify around) and the gain. */
+interface FaceContrast {
+  readonly meanLightness: number;
+  readonly gain: number;
+}
+
 interface DitheredFaceGrid {
   /** Row-major over (vIndex, uIndex); length === uRegions.length * vRegions.length. */
   readonly chosen: readonly PaletteBlock[];
@@ -386,33 +428,39 @@ interface DitheredFaceGrid {
  * `textureSize^2` regardless of replica size, same as the undithered
  * cache already was.
  *
- * Each cell's raw averaged color is stretched (see `contrast.ts`'s
- * `stretchLightness`) against THIS face's own `sourceLightnessRange`
- * before dithering ever sees it, so dithering spreads error around the
- * same contrast-corrected targets the undithered path matches against
- * — the two modes disagree about WHICH block a position lands on, never
- * about what color they were each aiming for.
+ * When `contrast` is given, each cell's raw averaged color is amplified
+ * (see `contrast.ts`'s `amplifyLightness`) around THIS face's own mean
+ * lightness before dithering ever sees it, so dithering spreads error
+ * around the same targets the undithered path matches against — the two
+ * modes disagree about WHICH block a position lands on, never about what
+ * color they were each aiming for. The un-amplified colors go along too:
+ * how far dithering may wander from a cell is sized by how well the
+ * palette matches the pixel's TRUE color (see `ditherGrid`), so a boost
+ * that pushes a target out of the palette's reach cannot buy it the
+ * freedom to wander into another color family.
  */
 function buildDitheredFaceGrid(
   texture: DecodedTexture,
   edgeBlocks: number,
-  paletteCandidates: readonly { color: Oklab; variance: number; acquisitionCost: number; item: PaletteBlock }[],
-  dither: DitherOptions,
-  sourceLightnessRange: LightnessRange,
-  paletteLightnessRange: LightnessRange,
+  paletteCandidates: readonly ScoredCandidate<PaletteBlock>[],
+  matchOptions: MatchOptions,
+  contrast: FaceContrast | undefined,
 ): DitheredFaceGrid {
   const uRegions = distinctPixelRegions(edgeBlocks, texture.width);
   const vRegions = distinctPixelRegions(edgeBlocks, texture.height);
 
-  const targets: Oklab[] = [];
+  const trueColors: Oklab[] = [];
   for (const vRegion of vRegions) {
     for (const uRegion of uRegions) {
-      const rawColor = linearRgbToOklab(averageColorInRegion(texture, uRegion, vRegion));
-      targets.push(stretchLightness(rawColor, sourceLightnessRange, paletteLightnessRange));
+      trueColors.push(linearRgbToOklab(averageColorInRegion(texture, uRegion, vRegion)));
     }
   }
+  const targets =
+    contrast === undefined
+      ? trueColors
+      : trueColors.map((trueColor) => amplifyLightness(trueColor, contrast.meanLightness, contrast.gain));
 
-  const chosen = ditherGrid(targets, uRegions.length, paletteCandidates, dither);
+  const chosen = ditherGrid(targets, uRegions.length, paletteCandidates, matchOptions, trueColors);
   return {
     chosen,
     uRegions,
@@ -436,16 +484,16 @@ function lookupDitheredBlock(grid: DitheredFaceGrid, uStart: number, vStart: num
  * Builds every filled voxel of a replica, each already resolved to a
  * concrete palette block.
  *
- * Every matched color is first run through a per-face contrast stretch
- * (see `contrast.ts`'s `stretchLightness`) before nearest-match ever
- * sees it — always on, not an option, since it exists to fix a bug
- * (BACKLOG.md 2.1) rather than to offer a stylistic choice: left alone,
- * a source face's own (possibly narrow) lightness range can nearest-
- * match entirely onto one or two candidates even though the palette as
- * a whole spans much more, flattening real light/dark pattern into a
- * near-solid color. See `assessReplicaContrastHeadroom` for the honest
- * complement to this — when even the best possible stretch can't make
- * up the gap, that reports it instead of silently doing its best.
+ * Matching is ABSOLUTE: each voxel resolves to the block whose color is
+ * nearest to its source pixel's real color, so the replica's colors are
+ * the source's colors regardless of what else happens to be in the
+ * palette. Adding or removing a block can only ever change the voxels
+ * that block itself wins or loses — never move a target. (An earlier
+ * "contrast preservation" step remapped each face's lightness range
+ * onto the whole palette's and broke exactly that, turning orange
+ * acacia white; see `contrast.ts`'s header.) `contrastGain` is the opt-in
+ * way to bring out a face's own faint pattern, and it works around that
+ * face's own average, so average colors never move either.
  *
  * Failure modes: throws `RangeError` for a non-positive/non-integer
  * `edgeBlocks` or an empty `palette`; throws `Error` if a source face
@@ -461,11 +509,13 @@ export function buildVoxelGrid(params: BuildVoxelGridParams): Voxel[] {
     fillStyle,
     sourceFaceTextures,
     palette,
-    varianceWeight = DEFAULT_VARIANCE_WEIGHT,
-    dither,
+    colorTolerance = DEFAULT_COLOR_TOLERANCE,
+    contrastGain = DEFAULT_CONTRAST_GAIN,
+    dither = false,
     interiorFillBlock,
   } = params;
   assertPositiveInteger(edgeBlocks, "edgeBlocks");
+  assertContrastGain(contrastGain);
   if (palette.length === 0) {
     throw new RangeError("buildVoxelGrid requires at least one palette block to build with");
   }
@@ -481,34 +531,40 @@ export function buildVoxelGrid(params: BuildVoxelGridParams): Voxel[] {
     }
   }
 
-  const paletteCandidates = palette.map((block) => ({
+  const paletteCandidates: ScoredCandidate<PaletteBlock>[] = palette.map((block) => ({
     color: block.color,
     variance: block.textureVariance,
     acquisitionCost: block.acquisitionCost,
     item: block,
   }));
+  const matchOptions: MatchOptions = { colorTolerance };
+  // Bound once and reused for every undithered decision — the matcher
+  // owns a scratch buffer, so creating one per call would reallocate it
+  // for every distinct texture cell of every face.
+  const matchColor = createMatcher(paletteCandidates, matchOptions);
 
-  // Per-face, not a single range shared across the whole block: a face
-  // with no internal variation of its own (most Minecraft block faces)
-  // must stretch to a no-op regardless of what any OTHER face of the
-  // same block looks like — see contrast.ts's stretchLightness for why
-  // a shared/aggregate range would wrongly drag a flat face toward
-  // whichever palette extreme is nearest its one color, just because a
-  // sibling face happened to be more varied.
-  const paletteLightnessRange = lightnessRangeOf(paletteCandidates.map((candidate) => candidate.color));
-  const sourceLightnessRangeByFace = new Map<CubeFaceDirection, LightnessRange>(
-    CUBE_FACE_DIRECTIONS.map((direction) => [
-      direction,
-      lightnessRangeOf(allPixelOklabColors(sourceFaceTextures[direction])),
-    ]),
-  );
+  // Per face, not one mean shared across the block: each face is
+  // amplified around ITS OWN average, so a face with no pattern of its
+  // own stays untouched regardless of how varied any sibling face is.
+  // Skipped entirely at gain 1 (no enhancement) — no scan, no map, and
+  // the two call sites below branch once on `undefined`.
+  const faceMeanLightness: ReadonlyMap<CubeFaceDirection, number> | undefined =
+    contrastGain === 1
+      ? undefined
+      : new Map(
+          [...lightnessStatsByFace(sourceFaceTextures)].map(([direction, stats]) => [direction, stats.mean]),
+        );
+  const faceContrast = (direction: CubeFaceDirection): FaceContrast | undefined =>
+    faceMeanLightness === undefined
+      ? undefined
+      : { meanLightness: faceMeanLightness.get(direction)!, gain: contrastGain };
 
   // Only built when dithering is on: one pre-dithered lookup table per
   // face, each cell decided in scan order up front (see
   // buildDitheredFaceGrid). A single-face voxel below reads directly
   // from this instead of ever touching resolvedColorCache.
   const ditheredFaceGrids: ReadonlyMap<CubeFaceDirection, DitheredFaceGrid> | undefined =
-    dither === undefined
+    !dither
       ? undefined
       : new Map(
           CUBE_FACE_DIRECTIONS.map((direction) => [
@@ -517,9 +573,8 @@ export function buildVoxelGrid(params: BuildVoxelGridParams): Voxel[] {
               sourceFaceTextures[direction],
               edgeBlocks,
               paletteCandidates,
-              dither,
-              sourceLightnessRangeByFace.get(direction)!,
-              paletteLightnessRange,
+              matchOptions,
+              faceContrast(direction),
             ),
           ]),
         );
@@ -569,20 +624,20 @@ export function buildVoxelGrid(params: BuildVoxelGridParams): Voxel[] {
           if (cached !== undefined) {
             paletteBlock = cached;
           } else {
-            // Each sample is stretched against ITS OWN face's source
-            // lightness range before being combined — see
-            // stretchLightness's doc comment for why per-face, not one
-            // range shared across the whole block. A side-to-side edge
-            // voxel (two samples) then blends its two already-stretched
-            // Oklab colors directly, the same "average in Oklab, not
-            // linear-then-convert-once" principle palette.ts's Jensen-gap
-            // fix established for averaging a single texture's pixels.
-            const stretchedColors = samples.map((sample, i) => {
+            // Each sample is amplified around ITS OWN face's mean (when
+            // contrast enhancement is on) before being combined. A side-
+            // to-side edge voxel (two samples) then blends its two
+            // already-amplified Oklab colors directly, the same "average
+            // in Oklab, not linear-then-convert-once" principle
+            // palette.ts's Jensen-gap fix established for averaging a
+            // single texture's pixels.
+            const targetColors = samples.map((sample, i) => {
               const rawColor = linearRgbToOklab(averageColorInRegion(sample.texture, sample.uRegion, sample.vRegion));
-              return stretchLightness(rawColor, sourceLightnessRangeByFace.get(directions[i]!)!, paletteLightnessRange);
+              const meanLightness = faceMeanLightness?.get(directions[i]!);
+              return meanLightness === undefined ? rawColor : amplifyLightness(rawColor, meanLightness, contrastGain);
             });
-            const color = stretchedColors.length === 1 ? stretchedColors[0]! : averageOklab(stretchedColors);
-            paletteBlock = findBestMatch(color, paletteCandidates, varianceWeight);
+            const color = targetColors.length === 1 ? targetColors[0]! : averageOklab(targetColors);
+            paletteBlock = matchColor(color).item;
             resolvedColorCache.set(cacheKey, paletteBlock);
           }
         }

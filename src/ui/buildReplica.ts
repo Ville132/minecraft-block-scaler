@@ -22,7 +22,7 @@ import { consolidateVoxels } from "../domain/consolidate.ts";
 import { buildMaterialList, type MaterialListEntry } from "../domain/materials.ts";
 import type { PaletteBlock } from "../domain/palette.ts";
 import type { ContrastHeadroom } from "../domain/contrast.ts";
-import { assessReplicaContrastHeadroom, buildVoxelGrid, type DitherOptions, type FillStyle, type Voxel } from "../domain/shell.ts";
+import { assessReplicaContrastHeadroom, buildVoxelGrid, type FillStyle, type Voxel } from "../domain/shell.ts";
 import { schematicFileName, writeSchematicBytes } from "../litematic/writeSchematic.ts";
 
 export interface BuildReplicaParams {
@@ -35,9 +35,11 @@ export interface BuildReplicaParams {
   /** Candidate replacement blocks — see `domain/palette.ts`. Must include at least one entry. */
   readonly palette: readonly PaletteBlock[];
   /** Forwarded to `buildVoxelGrid` — see its doc comment. Optional; `buildVoxelGrid` supplies its own default when omitted. */
-  readonly varianceWeight?: number;
-  /** Forwarded to `buildVoxelGrid` — see its doc comment. Omitted entirely disables dithering. */
-  readonly dither?: DitherOptions;
+  readonly colorTolerance?: number;
+  /** Forwarded to `buildVoxelGrid` — see its doc comment. Omitted (the default) means no contrast enhancement: every pixel matches its own true color. */
+  readonly contrastGain?: number;
+  /** Forwarded to `buildVoxelGrid` — see its doc comment. `false` or omitted disables dithering. */
+  readonly dither?: boolean;
   /** Caps the number of distinct block types in the finished build — see `domain/consolidate.ts`'s `consolidateVoxels`. Omitted entirely disables the cap (every voxel keeps whatever block the matcher originally picked). */
   readonly maxDistinctBlocks?: number;
 }
@@ -55,7 +57,7 @@ export interface BuildReplicaResult {
   readonly interiorFillBlockId: string | null;
   /** How much `maxDistinctBlocks` simplified this build — `null` when no cap was requested, or the build was already at or under it (a genuine no-op, not worth mentioning). See `domain/consolidate.ts`. */
   readonly consolidation: ConsolidationSummary | null;
-  /** Whether the source block's own contrast outstrips what the enabled palette can reach, even after `buildVoxelGrid`'s automatic per-face stretch — see `domain/contrast.ts`. Always present (every build has some answer to this), unlike `consolidation`: the UI decides whether `isPaletteLimited` is worth surfacing. */
+  /** Whether some face of the source block has a light/dark pattern faint enough that contrast enhancement would help — see `domain/contrast.ts`. A property of the source alone, not of the palette or this build's options. Always present (every build has some answer to this), unlike `consolidation`: the UI decides whether `isLowContrast` is worth surfacing. */
   readonly contrastHeadroom: ContrastHeadroom;
 }
 
@@ -209,7 +211,8 @@ export async function buildReplica(params: BuildReplicaParams): Promise<BuildRep
     edgeBlocks,
     fillStyle,
     palette,
-    varianceWeight,
+    colorTolerance,
+    contrastGain,
     dither,
     maxDistinctBlocks,
   } = params;
@@ -245,7 +248,8 @@ export async function buildReplica(params: BuildReplicaParams): Promise<BuildRep
     fillStyle,
     sourceFaceTextures,
     palette,
-    ...(varianceWeight !== undefined && { varianceWeight }),
+    ...(colorTolerance !== undefined && { colorTolerance }),
+    ...(contrastGain !== undefined && { contrastGain }),
     ...(dither !== undefined && { dither }),
     ...(interiorFillBlock !== undefined && { interiorFillBlock }),
   });
@@ -283,6 +287,6 @@ export async function buildReplica(params: BuildReplicaParams): Promise<BuildRep
     usedBlockTextures,
     interiorFillBlockId: interiorFillBlock?.blockId ?? null,
     consolidation,
-    contrastHeadroom: assessReplicaContrastHeadroom(sourceFaceTextures, palette),
+    contrastHeadroom: assessReplicaContrastHeadroom(sourceFaceTextures),
   };
 }

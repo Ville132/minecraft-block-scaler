@@ -1,19 +1,47 @@
 import { useMemo, useState } from "react";
+import { DEFAULT_COLOR_TOLERANCE } from "../domain/color.ts";
+import { DEFAULT_CONTRAST_GAIN } from "../domain/contrast.ts";
 import { classifyScale, hollowBlockCount, listScaleOptions, solidBlockCount, type ScaleClassification } from "../domain/scale.ts";
 import type { FillStyle } from "../domain/shell.ts";
 
-/** The three variance-weight choices offered in the picker — see `domain/shell.ts`'s `DEFAULT_VARIANCE_WEIGHT` for why `1` (not just any positive number) is the principled middle option. */
-export const VARIANCE_WEIGHT_CHOICES = [
-  { weight: 0, label: "Any block", hint: "Pure color match — a block's own texture noise is never a factor." },
+/** The tolerance behind "Strongly prefer clean textures": a deliberately visible trade of color accuracy for texture, at 2.5x the default. */
+const STRONG_COLOR_TOLERANCE = 0.05;
+
+/** The three color-tolerance choices offered in the picker. What a tolerance MEANS is defined in `domain/color.ts`'s `MatchOptions.colorTolerance` (how much worse than the nearest color a block may be and still win on a flatter texture); these are the values it's offered at: `0` is plain nearest-color matching, `DEFAULT_COLOR_TOLERANCE` is about one just-noticeable difference, and `STRONG_COLOR_TOLERANCE` is a deliberately visible trade. */
+export const COLOR_TOLERANCE_CHOICES = [
   {
-    weight: 1,
-    label: "Prefer clean textures",
-    hint: "Penalizes a busy/noisy block exactly as much as the blur it would actually add (recommended).",
+    tolerance: 0,
+    label: "Closest color, always",
+    hint: "Always picks the single nearest-colored block, however busy its texture is.",
   },
   {
-    weight: 2.5,
+    tolerance: DEFAULT_COLOR_TOLERANCE,
+    label: "Prefer clean textures",
+    hint: `Accepts a block up to ${DEFAULT_COLOR_TOLERANCE} off in color — about one just-noticeable difference — if its texture is flatter (recommended).`,
+  },
+  {
+    tolerance: STRONG_COLOR_TOLERANCE,
     label: "Strongly prefer clean textures",
-    hint: "Leans further toward flat blocks even at a slightly worse color match.",
+    hint: `Accepts a visibly different block (up to ${STRONG_COLOR_TOLERANCE} off in color) in exchange for a flatter texture.`,
+  },
+] as const;
+
+/** The contrast-enhancement choices offered in the picker. What a gain MEANS is defined in `domain/contrast.ts`'s `amplifyLightness`: it exaggerates each face's own light/dark pattern around that face's own average, so average colors never move. `1` is the default and means none. Stops at 2 — past that a face's darkest and lightest pixels start leaving their own color family, which defeats the purpose. */
+export const CONTRAST_GAIN_CHOICES = [
+  {
+    gain: DEFAULT_CONTRAST_GAIN,
+    label: "True colors",
+    hint: "Every block matches its source pixel's actual color (recommended).",
+  },
+  {
+    gain: 1.5,
+    label: "Boost contrast",
+    hint: "Pushes light and dark areas 50% further apart around each face's own average brightness. The average color of every face stays exactly the same.",
+  },
+  {
+    gain: 2,
+    label: "Strong contrast",
+    hint: "Doubles the light/dark spread. Useful for a texture with very little pattern of its own; can push subtle shades into a neighbouring color family.",
   },
 ] as const;
 
@@ -30,8 +58,10 @@ export interface ScaleAndOptionsStepProps {
   readonly onEdgeBlocksChange: (edgeBlocks: number) => void;
   readonly fillStyle: FillStyle;
   readonly onFillStyleChange: (fillStyle: FillStyle) => void;
-  readonly varianceWeight: number;
-  readonly onVarianceWeightChange: (varianceWeight: number) => void;
+  readonly colorTolerance: number;
+  readonly onColorToleranceChange: (colorTolerance: number) => void;
+  readonly contrastGain: number;
+  readonly onContrastGainChange: (contrastGain: number) => void;
   /** Off by default — see `domain/dither.ts`'s header comment for the tradeoff this trades flat-but-off color for (a speckled look up close). */
   readonly ditherEnabled: boolean;
   readonly onDitherEnabledChange: (enabled: boolean) => void;
@@ -70,8 +100,10 @@ export function ScaleAndOptionsStep({
   onEdgeBlocksChange,
   fillStyle,
   onFillStyleChange,
-  varianceWeight,
-  onVarianceWeightChange,
+  colorTolerance,
+  onColorToleranceChange,
+  contrastGain,
+  onContrastGainChange,
   ditherEnabled,
   onDitherEnabledChange,
   maxDistinctBlocks,
@@ -205,13 +237,13 @@ export function ScaleAndOptionsStep({
       </div>
 
       <div className="fill-style-row">
-        {VARIANCE_WEIGHT_CHOICES.map(({ weight, label }) => (
-          <label key={weight}>
+        {COLOR_TOLERANCE_CHOICES.map(({ tolerance, label }) => (
+          <label key={tolerance}>
             <input
               type="radio"
-              name="varianceWeight"
-              checked={varianceWeight === weight}
-              onChange={() => onVarianceWeightChange(weight)}
+              name="colorTolerance"
+              checked={colorTolerance === tolerance}
+              onChange={() => onColorToleranceChange(tolerance)}
             />
             {label}
           </label>
@@ -219,8 +251,23 @@ export function ScaleAndOptionsStep({
       </div>
       {/* Was a title= tooltip on each radio — invisible on touch and unreachable by keyboard (BACKLOG.md 4.5). Shows the SELECTED option's own explanation rather than all three at once, so it stays useful context instead of a wall of text covering choices not even picked. */}
       <p className="hint-text">
-        {VARIANCE_WEIGHT_CHOICES.find((choice) => choice.weight === varianceWeight)?.hint}
+        {COLOR_TOLERANCE_CHOICES.find((choice) => choice.tolerance === colorTolerance)?.hint}
       </p>
+
+      <div className="fill-style-row">
+        {CONTRAST_GAIN_CHOICES.map(({ gain, label }) => (
+          <label key={gain}>
+            <input
+              type="radio"
+              name="contrastGain"
+              checked={contrastGain === gain}
+              onChange={() => onContrastGainChange(gain)}
+            />
+            {label}
+          </label>
+        ))}
+      </div>
+      <p className="hint-text">{CONTRAST_GAIN_CHOICES.find((choice) => choice.gain === contrastGain)?.hint}</p>
 
       <div className="options-row">
         <label className="checkbox">
@@ -233,9 +280,9 @@ export function ScaleAndOptionsStep({
         </label>
       </div>
       <p className="hint-text">
-        Floyd-Steinberg dithering: lets neighbouring voxels alternate between two blocks so an area's AVERAGE
-        color matches the source more closely, instead of every voxel in that area flatly picking the same one
-        nearest block. More accurate from a distance; speckled up close.
+        Floyd-Steinberg dithering: neighbouring voxels alternate between nearby blocks so an area's AVERAGE color
+        gets closer to the source. Each voxel stays close to its own pixel's color — it never jumps to a far-off
+        block — but the result is speckled: more accurate from a distance, noisier up close.
       </p>
 
       <div className="options-row" style={{ alignItems: "center" }}>

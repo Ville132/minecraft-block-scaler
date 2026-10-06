@@ -433,12 +433,11 @@ export interface BlockAppearance {
  * Averaging directly in Oklab (rather than linear-light-then-convert)
  * matters for `variance`: Oklab's cube-root nonlinearity means those two
  * averages are different points, and only the true centroid makes
- * `variance` (the mean squared distance from `color`) the actual
- * variance `color.ts`'s `findBestMatch` assumes it is — see its own doc
- * comment on the bias-variance decomposition. For a perfectly flat
- * texture both methods agree exactly (every pixel is the same point
- * either way), which is why this does not disturb any color pinned by a
- * uniform-texture test.
+ * `variance` (the mean squared distance from `color`) a true variance
+ * of the texture around its own center. For a perfectly flat texture
+ * both methods agree (every pixel is the same point either way), which
+ * is why this does not disturb any color pinned by a uniform-texture
+ * test.
  *
  * `variance` is the mean squared Oklab distance of every pixel of every
  * distinct texture from the block's own `color`, pooled with the same
@@ -446,8 +445,11 @@ export interface BlockAppearance {
  * mean-squared-distance is computed first, then those per-texture
  * numbers are averaged) — so a block whose faces differ wildly from each
  * other is correctly scored as a poor single-color stand-in, not only a
- * block that is noisy within one face. 0 for a perfectly flat texture
- * (every pixel equals the mean exactly).
+ * block that is noisy within one face. Zero for a perfectly flat texture
+ * up to float rounding (the mean is a sum divided by a pixel count and can
+ * land an ulp off the identical pixels, leaving a variance near 1e-33):
+ * `color.ts`'s matcher compares variances at a coarser resolution for
+ * exactly that reason, so this is deliberately not snapped to 0 here.
  */
 async function representativeAppearance(
   archive: MinecraftArchive,

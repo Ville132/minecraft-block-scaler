@@ -17,24 +17,25 @@
  * rather than screen pixels.
  */
 
-import { oklabDistanceSquared, type Oklab } from "./color.ts";
-
-export interface DitherCandidate<T> {
-  readonly color: Oklab;
-  /** Same meaning as `color.ts`'s `findBestMatch` — see `DitherOptions.varianceWeight`. */
-  readonly variance: number;
-  readonly item: T;
-}
-
-export interface DitherOptions {
-  /** Identical in meaning to `color.ts`'s `findBestMatch`'s `varianceWeight` — dithering still accounts for a candidate's own texture noise at every decision; it additionally diffuses whatever color error is LEFT onto not-yet-decided neighbours, rather than discarding it. */
-  readonly varianceWeight: number;
-}
+import { createMatcher, oklabDistance, type MatchOptions, type Oklab, type ScoredCandidate } from "./color.ts";
 
 interface MutableLab {
   L: number;
   a: number;
   b: number;
+}
+
+/** Pulls `cell` back toward `anchor` until it is no farther than `maxDrift` away (Oklab distance), keeping its direction; a no-op when it is already within reach. A `maxDrift` of 0 pins the cell to `anchor` exactly. */
+function limitDrift(cell: MutableLab, anchor: Oklab, maxDrift: number): void {
+  const deltaL = cell.L - anchor.L;
+  const deltaA = cell.a - anchor.a;
+  const deltaB = cell.b - anchor.b;
+  const drift = Math.hypot(deltaL, deltaA, deltaB);
+  if (drift <= maxDrift) return;
+  const scale = maxDrift / drift;
+  cell.L = anchor.L + deltaL * scale;
+  cell.a = anchor.a + deltaA * scale;
+  cell.b = anchor.b + deltaB * scale;
 }
 
 /** Mutates `grid[index]` by adding a weighted error, or does nothing if `index` names a cell outside the grid — out-of-bounds weight is simply discarded, not renormalized onto the remaining neighbours. That is a one-cell-wide loss along each border, a fair trade for not special-casing every edge and corner differently. */
@@ -69,19 +70,64 @@ function diffuseErrorInto(
  * impossible target instead of converging. `a`/`b` (chroma) are left
  * unclamped: Oklab does not define a comparable hard bound for them.
  *
+ * Each cell is also kept on a leash before it is matched: its working
+ * target (its own target plus whatever error was diffused onto it) is
+ * pulled back until it is no farther from the cell's own target than the
+ * best block for the cell's TRUE color is from that color, and the error
+ * is then measured from the pulled-back color, so the excess is discarded
+ * instead of diffused on.
+ *
+ * WHY a leash at all: error diffusion only converges for a target the
+ * palette can actually reach. For one outside every block's reach — a more
+ * saturated orange than any orange block, say — the error always points
+ * the same way, each cell hands the next one more of it, and the working
+ * target runs away until some distant block (white, for orange) finally
+ * counts as nearest: a stray pale block in the middle of the face. Seen
+ * for real: 3 quartz blocks in a 16x16 orange face whose nearest block was
+ * 0.025 away and whose quartz was 0.354 away.
+ *
+ * WHY relative to the best block's distance, not a constant: dithering
+ * approximates a color BETWEEN sparse blocks by alternating them, so the
+ * swing it needs scales with how far apart the blocks are — a mid-gray
+ * against only black and white must swing by ~0.2, an orange with a block
+ * 0.025 away has no reason to swing more than a few hundredths. The flip
+ * side, by design: where a block already matches well there is no gap to
+ * bridge and dithering stays out of the way instead of speckling, and a
+ * target in the first quarter of the way from one block to the next stays
+ * on the nearer block.
+ *
+ * WHY the TRUE color and not the target: a caller may deliberately shift
+ * its targets (contrast enhancement pushes pixels toward the palette's
+ * extremes), and a shifted target is farther from every block than its
+ * true color is. Sizing the leash from it would reward the shift with a
+ * longer leash when the shift is exactly what put the target out of reach.
+ *
+ * Every individual decision goes through `color.ts`'s `createMatcher` —
+ * the SAME rule the undithered path uses, not a copy of it. Dithering
+ * only changes WHICH target each cell is matched against (the original
+ * plus whatever error was diffused onto it), never how a target becomes
+ * a block, so the two modes can disagree about which block a position
+ * lands on but never about what they were each aiming for. A copy of an
+ * intricate rule like the colour-tolerance band would silently drift.
+ *
  * Inputs: `targets`, row-major Oklab colors (`targets.length` must be a
  * positive multiple of `width`); `candidates`, the fill-material pool
- * (non-empty); `options`.
+ * (non-empty); `options`, forwarded to the shared matcher; `trueColors`,
+ * the colors `targets` were derived from, one per target, when they were
+ * deliberately shifted (defaults to `targets` themselves).
  * Output: one candidate's `item` per target cell, same row-major order.
- * Failure modes: throws `RangeError` for an empty `candidates` list, or
- * if `width` does not evenly and positively divide `targets.length`.
+ * Failure modes: throws `RangeError` for an empty `candidates` list or an
+ * invalid `options.colorTolerance`, if `width` does not evenly and
+ * positively divide `targets.length`, or if `trueColors` is not the same
+ * length as `targets`.
  * Fully deterministic — no randomness anywhere in the algorithm.
  */
 export function ditherGrid<T>(
   targets: readonly Oklab[],
   width: number,
-  candidates: readonly DitherCandidate<T>[],
-  options: DitherOptions,
+  candidates: readonly ScoredCandidate<T>[],
+  options: MatchOptions,
+  trueColors: readonly Oklab[] = targets,
 ): T[] {
   if (candidates.length === 0) {
     throw new RangeError("ditherGrid requires at least one candidate");
@@ -91,7 +137,13 @@ export function ditherGrid<T>(
       `targets.length (${targets.length}) must be a positive multiple of a positive integer width (got width=${width})`,
     );
   }
+  if (trueColors.length !== targets.length) {
+    throw new RangeError(
+      `trueColors.length (${trueColors.length}) must equal targets.length (${targets.length})`,
+    );
+  }
   const height = targets.length / width;
+  const match = createMatcher(candidates, options);
 
   const working: MutableLab[] = targets.map((target) => ({ L: target.L, a: target.a, b: target.b }));
   const chosen = new Array<T>(targets.length);
@@ -102,18 +154,11 @@ export function ditherGrid<T>(
       const col = scanningLeftToRight ? step : width - 1 - step;
       const index = row * width + col;
       const cell = working[index]!;
+      const trueColor = trueColors[index]!;
+      limitDrift(cell, targets[index]!, oklabDistance(trueColor, match(trueColor).color));
       const target: Oklab = { L: Math.min(1, Math.max(0, cell.L)), a: cell.a, b: cell.b };
 
-      let best = candidates[0]!;
-      let bestCost = oklabDistanceSquared(target, best.color) + options.varianceWeight * best.variance;
-      for (let i = 1; i < candidates.length; i++) {
-        const candidate = candidates[i]!;
-        const cost = oklabDistanceSquared(target, candidate.color) + options.varianceWeight * candidate.variance;
-        if (cost < bestCost) {
-          best = candidate;
-          bestCost = cost;
-        }
-      }
+      const best = match(target);
       chosen[index] = best.item;
 
       const errorL = cell.L - best.color.L;

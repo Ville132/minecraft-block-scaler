@@ -26,7 +26,14 @@ item itself for which.
       cross-block shulker packing still deliberately not done, see the item itself
 - [x] 1.4 Exclusion-list fixes — `domain/palette.ts`
 - [x] 1.5 Cost-aware tie-breaking — `acquisitionCost` in `color.ts`/`palette.ts`
-- [x] 2.1 Contrast preservation — `domain/contrast.ts`, the original bug report
+- [x] 2.1 Contrast preservation — `domain/contrast.ts`, the original bug report.
+      **Superseded in v0.14.0:** the full-range stretch was the cause of the
+      wrong-colour bug (orange logs rendered in white blocks) and was removed;
+      contrast enhancement is now an opt-in around each face's own mean. See
+      `BACKLOG-COLOR-FIX.md`.
+- [x] Colour fidelity (v0.14.0) — absolute colour matching, colour-first matcher
+      with a `colorTolerance`, opt-in `contrastGain`, dithering leash —
+      `BACKLOG-COLOR-FIX.md`
 - [x] 2.2 Jensen gap fix — `palette.ts`'s `representativeAppearance`
 - [ ] 2.3 Down-scaled variance rule
 - [x] 2.4 Emissive blocks — `palette.ts`'s `applyEmissiveBoost`

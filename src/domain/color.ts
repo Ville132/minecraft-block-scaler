@@ -157,7 +157,7 @@ export function oklabToRgb8(lab: Oklab): Rgb8 {
   return linearRgbToRgb8(oklabToLinearRgb(lab));
 }
 
-/** Squared Euclidean distance in Oklab space — avoids a `sqrt` when only relative ordering matters (e.g. nearest-match), and is the natural unit for a variance term (see `findBestMatch`), since variance is itself in squared-distance units. */
+/** Squared Euclidean distance in Oklab space — avoids a `sqrt` when only relative ordering matters (e.g. nearest-match). */
 export function oklabDistanceSquared(a: Oklab, b: Oklab): number {
   const dL = a.L - b.L;
   const da = a.a - b.a;
@@ -174,76 +174,183 @@ export interface ScoredCandidate<T> {
   readonly color: Oklab;
   /** Mean squared Oklab distance of this candidate's own texture pixels from its `color` — how visually "busy" it is. 0 for a perfectly flat texture. */
   readonly variance: number;
-  /** A small, unitless acquisition-cost score — how much harder this candidate is to gather at the scale of a real build, relative to an ordinary block (0). Only ever meant to break a near-tie between two otherwise-similar colors (see `findBestMatch`'s `costWeight`), never to override a real color difference. Omitted (treated as 0) by every caller that has no concept of cost. */
+  /** A small, unitless acquisition-cost score — how much harder this candidate is to gather at the scale of a real build, relative to an ordinary block (0). Only ever a tie-break between candidates already tied on both color band AND flatness (see {@link createMatcher}), never a reason to prefer a worse color or a busier texture. Omitted (treated as 0) by every caller that has no concept of cost. */
   readonly acquisitionCost?: number;
   readonly item: T;
 }
 
-/** `findBestMatch`'s default `costWeight` — small enough that it only ever decides a near-tie: two candidates need to be within roughly 0.03 of Oklab distance (an already close color match) before a cost difference of 1 can flip the result, since `0.03^2 * 1 ≈ costWeight`. Not derived from a formula the way `DEFAULT_VARIANCE_WEIGHT` is — there is no equivalent decomposition for "how much should gathering effort count against a color match" — so this is a deliberately conservative hand-picked constant, not a principled one. */
-export const DEFAULT_COST_WEIGHT = 0.001;
+/**
+ * The default {@link MatchOptions.colorTolerance}: 0.02 Oklab distance —
+ * on the order of one just-noticeable difference, the scale Oklab was
+ * designed around (roughly the smallest difference most people can see
+ * between two flat colors placed side by side). A block that close to
+ * the best color match is, to a human eye, an equally good match, so
+ * spending that much color accuracy to get a flatter texture is a trade
+ * almost nobody would notice.
+ */
+export const DEFAULT_COLOR_TOLERANCE = 0.02;
 
 /**
- * Finds the candidate that best stands in for `target`, accounting for
- * color accuracy, how visually busy the candidate's own texture is, and
- * (as a near-tie-breaker only) how costly it is to gather.
+ * Variances closer together than this count as equally flat. 1e-6 is a
+ * mean squared deviation of 0.001 Oklab — twenty times below one
+ * just-noticeable difference — so two textures this close look equally
+ * clean to any eye, and the gap between them is not a reason to prefer one.
  *
- * The color+variance half of the scoring falls directly out of the
- * bias-variance decomposition of expected squared error: if a candidate
- * `B` is used to represent `target`, the expected squared perceptual
- * error of a random pixel of `B` is `|mean(B) - target|^2 + Var(B)` —
- * the color miss, plus the candidate's own noise around its mean.
- * `varianceWeight` scales how much the variance term counts: `0`
- * reproduces plain nearest-color matching (a noisy block is just as
- * eligible as a flat one with the same mean); `1` is the literal,
- * unscaled expected-error sum. Higher values increasingly prefer flat
- * blocks over busy ones even at a worse color match.
+ * WHY it exists at all: a perfectly flat texture's measured variance is
+ * not reliably 0. Its mean is a sum divided by a pixel count, which can
+ * land one ulp away from the (identical) pixels, leaving a variance near
+ * 1e-33 for one flat block and exactly 0 for the next. Compared exactly,
+ * that noise would pick between equally flat concrete, terracotta or wool
+ * blocks and ignore which of them is nearer in color.
+ */
+const VARIANCE_RESOLUTION = 1e-6;
+
+/** `variance` in whole {@link VARIANCE_RESOLUTION} steps, so equally flat textures compare equal and the ordering stays transitive. */
+function flatnessLevelOf(variance: number): number {
+  return Math.round(variance / VARIANCE_RESOLUTION);
+}
+
+export interface MatchOptions {
+  /**
+   * How much WORSE than the single nearest color a candidate may be, in
+   * Oklab distance units, and still count as an equally good match —
+   * i.e. how much color accuracy may be traded for a flatter texture.
+   * `0` is plain nearest-color matching: texture busyness only ever
+   * breaks an exact color tie. Must be finite and non-negative.
+   */
+  readonly colorTolerance: number;
+}
+
+/**
+ * Binds `candidates` and `options` once and returns a matcher: given a
+ * target color, it returns the candidate that best stands in for it.
+ * Color decides FIRST; texture busyness only breaks ties the eye
+ * couldn't tell apart:
  *
- * `costWeight` scales `acquisitionCost` the same way, but unlike
- * variance there is no error-decomposition justification for any
- * particular value — it exists purely to prefer the cheaper of two
- * near-identical colors, never to meaningfully outweigh accuracy. See
- * {@link DEFAULT_COST_WEIGHT}.
+ * 1. Find the candidate nearest to `target` — distance `d`.
+ * 2. Keep every candidate within `d + colorTolerance` of `target`.
+ * 3. Among those, pick the flattest texture (lowest `variance`, compared
+ *    at {@link VARIANCE_RESOLUTION} — float noise is not flatness).
+ * 4. Ties: the cheaper (`acquisitionCost`), then the nearer in color,
+ *    then whichever is listed first — so the result is fully
+ *    deterministic and never depends on iteration quirks.
  *
- * Inputs: `target`, the color to match; `candidates`, each paired with
- * the item it should resolve to if best; `varianceWeight`; `costWeight`
- * (defaults to {@link DEFAULT_COST_WEIGHT}).
- * Output: the best candidate's `item`.
- * Failure mode: throws `RangeError` on an empty candidate list, rather
- * than returning a meaningless default match.
+ * WHY not a weighted sum: this used to score `distance² + w·variance`,
+ * which looked principled (it is the bias-variance decomposition of the
+ * expected squared error of using a candidate as a single-color
+ * stand-in) but is a bad fit for how close real matches are. A good
+ * color match has `distance²` around 0.00003 while a texture's
+ * `variance` is routinely 0.001–0.05 — an order of magnitude larger —
+ * so among all reasonably close colors the variance term alone decided
+ * the winner, and a block with 5× the color error could win simply for
+ * having a flatter texture. A tolerance band keeps the useful part of
+ * that idea (prefer a clean texture when the colors are equally good)
+ * while making it impossible to trade a visibly wrong color for it: the
+ * most color accuracy that can ever be given up is exactly
+ * `colorTolerance`, a number with a physical meaning instead of an
+ * abstract weight.
+ *
+ * Known property, by design: the rule is discontinuous in `target`. A
+ * flat candidate sitting right at the band's edge can win for one
+ * target and lose for a nearly identical neighbouring one, so two
+ * adjacent voxels of almost the same color may resolve to different
+ * (but equally good) blocks. The color error this can introduce is
+ * bounded by `colorTolerance` by construction.
+ *
+ * Why this is a factory: the nearest-candidate search needs every
+ * distance before the band can be defined, so each match is two passes.
+ * Binding the pool once lets the matcher own a single scratch buffer for
+ * the distances instead of allocating one per call, which matters when
+ * this runs once per distinct texture cell of every face of a build.
+ *
+ * Failure modes: throws `RangeError` on an empty candidate list (rather
+ * than returning a meaningless default match), or on a `colorTolerance`
+ * that is negative or not finite.
+ */
+export function createMatcher<T>(
+  candidates: readonly ScoredCandidate<T>[],
+  options: MatchOptions,
+): (target: Oklab) => ScoredCandidate<T> {
+  if (candidates.length === 0) {
+    throw new RangeError("createMatcher requires at least one candidate");
+  }
+  const { colorTolerance } = options;
+  if (!Number.isFinite(colorTolerance) || colorTolerance < 0) {
+    throw new RangeError(`colorTolerance must be a finite, non-negative number, got ${colorTolerance}`);
+  }
+
+  const squaredDistances = new Float64Array(candidates.length);
+  const flatnessLevels = Float64Array.from(candidates, (candidate) => flatnessLevelOf(candidate.variance));
+
+  return (target) => {
+    let nearestIndex = 0;
+    let nearestSquared = Infinity;
+    for (let i = 0; i < candidates.length; i++) {
+      const squared = oklabDistanceSquared(target, candidates[i]!.color);
+      squaredDistances[i] = squared;
+      if (squared < nearestSquared) {
+        nearestSquared = squared;
+        nearestIndex = i;
+      }
+    }
+
+    // At tolerance 0 the band is exactly the nearest distance: skipping
+    // the sqrt-and-square round trip is not just faster, it is what
+    // keeps the band from ever excluding its own argmin — `sqrt(x) ** 2`
+    // can land one ulp BELOW `x`.
+    const bandLimitSquared =
+      colorTolerance === 0 ? nearestSquared : (Math.sqrt(nearestSquared) + colorTolerance) ** 2;
+
+    // Seeded with the nearest candidate, so the chosen candidate is a
+    // member of its own band by construction regardless of arithmetic.
+    let chosen = candidates[nearestIndex]!;
+    let chosenSquared = nearestSquared;
+    let chosenFlatness = flatnessLevels[nearestIndex]!;
+    let chosenCost = chosen.acquisitionCost ?? 0;
+
+    for (let i = 0; i < candidates.length; i++) {
+      const squared = squaredDistances[i]!;
+      if (i === nearestIndex || squared > bandLimitSquared) continue;
+
+      const candidate = candidates[i]!;
+      const cost = candidate.acquisitionCost ?? 0;
+      const flatness = flatnessLevels[i]!;
+      const isFlatter = flatness < chosenFlatness;
+      const isAsFlat = flatness === chosenFlatness;
+      const isCheaper = cost < chosenCost;
+      const isAsCheap = cost === chosenCost;
+      const isNearer = squared < chosenSquared;
+      if (isFlatter || (isAsFlat && (isCheaper || (isAsCheap && isNearer)))) {
+        chosen = candidate;
+        chosenSquared = squared;
+        chosenFlatness = flatness;
+        chosenCost = cost;
+      }
+    }
+    return chosen;
+  };
+}
+
+/**
+ * One-shot convenience over {@link createMatcher}: the `item` of the
+ * candidate that best stands in for `target`. Prefer `createMatcher`
+ * anywhere many targets are matched against the same pool.
+ *
+ * Failure modes: as {@link createMatcher}.
  */
 export function findBestMatch<T>(
   target: Oklab,
   candidates: readonly ScoredCandidate<T>[],
-  varianceWeight: number,
-  costWeight: number = DEFAULT_COST_WEIGHT,
+  options: MatchOptions,
 ): T {
-  if (candidates.length === 0) {
-    throw new RangeError("findBestMatch requires at least one candidate");
-  }
-  const costOf = (candidate: ScoredCandidate<T>): number =>
-    oklabDistanceSquared(target, candidate.color) +
-    varianceWeight * candidate.variance +
-    costWeight * (candidate.acquisitionCost ?? 0);
-
-  let best = candidates[0]!;
-  let bestCost = costOf(best);
-  for (let i = 1; i < candidates.length; i++) {
-    const candidate = candidates[i]!;
-    const cost = costOf(candidate);
-    if (cost < bestCost) {
-      best = candidate;
-      bestCost = cost;
-    }
-  }
-  return best.item;
+  return createMatcher(candidates, options)(target).item;
 }
 
 /**
  * Finds the closest-matching candidate to `target` by plain Oklab
  * distance, ignoring texture busyness — a thin convenience wrapper
  * around {@link findBestMatch} with every candidate's variance zeroed
- * out and `varianceWeight` zero, so the variance term never affects the
- * result.
+ * out and a tolerance of zero, so only color ever matters.
  *
  * Inputs: `target`, the color to match; `candidates`, each paired with
  * the item it should resolve to if nearest.
@@ -258,6 +365,6 @@ export function findNearestOklab<T>(
   return findBestMatch(
     target,
     candidates.map((candidate) => ({ ...candidate, variance: 0 })),
-    0,
+    { colorTolerance: 0 },
   );
 }

@@ -2,6 +2,8 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { clearCachedArchive, loadCachedArchive } from "../assets/archiveCache.ts";
 import { readMinecraftArchive, type MinecraftArchive } from "../assets/archiveReader.ts";
 import type { AxisOrientation } from "../assets/modelResolver.ts";
+import { DEFAULT_COLOR_TOLERANCE } from "../domain/color.ts";
+import { DEFAULT_CONTRAST_GAIN } from "../domain/contrast.ts";
 import {
   buildPalette,
   DEFAULT_PALETTE_OPTIONS,
@@ -12,7 +14,7 @@ import {
   type PaletteOptions,
 } from "../domain/palette.ts";
 import { VANILLA_TEXTURE_SIZE_PX } from "../domain/scale.ts";
-import { DEFAULT_VARIANCE_WEIGHT, type FillStyle } from "../domain/shell.ts";
+import type { FillStyle } from "../domain/shell.ts";
 import { ArchiveUploadStep } from "./ArchiveUploadStep.tsx";
 import { BlockPickerStep } from "./BlockPickerStep.tsx";
 import { buildReplica, resolveSourceTexturePixelsPerSide, type BuildReplicaResult } from "./buildReplica.ts";
@@ -79,7 +81,16 @@ export function App() {
   // completely different one restored from a past visit.
   const [edgeBlocks, setEdgeBlocks] = useState<number | null>(null);
   const [fillStyle, setFillStyle] = usePersistedState<FillStyle>("fillStyle", "hollow");
-  const [varianceWeight, setVarianceWeight] = usePersistedState<number>("varianceWeight", DEFAULT_VARIANCE_WEIGHT);
+  // A NEW storage key on purpose, not the old "varianceWeight": that key
+  // holds a weight (0 / 1 / 2.5), and reading it back as a tolerance would
+  // be catastrophic — a stored 1 is a tolerance of 1.0 Oklab, wider than
+  // any real color distance, so every voxel would resolve to the flattest
+  // block in the whole palette: a uniformly pale, flat replica that looks
+  // exactly like the bug this replaced, silently, for every returning
+  // visitor. An absent key just falls back to the default.
+  const [colorTolerance, setColorTolerance] = usePersistedState<number>("colorTolerance", DEFAULT_COLOR_TOLERANCE);
+  /** `1` (no enhancement) by default — see `domain/contrast.ts`. A brand-new storage key, so there is no older stored value of a different meaning to misread. */
+  const [contrastGain, setContrastGain] = usePersistedState<number>("contrastGain", DEFAULT_CONTRAST_GAIN);
   /** Off by default — see `domain/dither.ts`'s header comment. */
   const [ditherEnabled, setDitherEnabled] = usePersistedState("ditherEnabled", false);
   /** `null` means no cap — see `domain/consolidate.ts`. Defaults ON: nothing upstream limits distinct block count, and a cap at or above whatever a build would naturally use is a no-op, so defaulting it on costs nothing for a build that was already simple. */
@@ -168,8 +179,9 @@ export function App() {
         edgeBlocks,
         fillStyle,
         palette: fillPalette,
-        varianceWeight,
-        ...(ditherEnabled && { dither: { varianceWeight } }),
+        colorTolerance,
+        contrastGain,
+        dither: ditherEnabled,
         ...(maxDistinctBlocks !== null && { maxDistinctBlocks }),
       });
       setResult(built);
@@ -270,9 +282,14 @@ export function App() {
           setFillStyle(style);
           setResultIsStale(true);
         }}
-        varianceWeight={varianceWeight}
-        onVarianceWeightChange={(weight) => {
-          setVarianceWeight(weight);
+        colorTolerance={colorTolerance}
+        onColorToleranceChange={(tolerance) => {
+          setColorTolerance(tolerance);
+          setResultIsStale(true);
+        }}
+        contrastGain={contrastGain}
+        onContrastGainChange={(gain) => {
+          setContrastGain(gain);
           setResultIsStale(true);
         }}
         ditherEnabled={ditherEnabled}

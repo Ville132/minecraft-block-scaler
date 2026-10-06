@@ -2,6 +2,8 @@ import { describe, expect, it } from "vitest";
 import {
   averageLinearRgb,
   averageOklab,
+  createMatcher,
+  DEFAULT_COLOR_TOLERANCE,
   findBestMatch,
   findNearestOklab,
   linearRgbToOklab,
@@ -199,63 +201,181 @@ describe("oklabDistanceSquared", () => {
 
 describe("findBestMatch", () => {
   const target = { L: 0.5, a: 0, b: 0 };
-  // Hand-computed costs at target (L=0.5,a=0,b=0):
-  //   noisyNear: color (L=0.52) -> distanceSquared = 0.02^2 = 0.0004; variance 0.01
-  //     cost(weight=0) = 0.0004            cost(weight=1) = 0.0104
-  //   flatFar:   color (L=0.6)  -> distanceSquared = 0.1^2  = 0.01;   variance 0
-  //     cost(weight=0) = 0.01              cost(weight=1) = 0.01
+  // Every candidate sits on the L axis, so its color distance from the
+  // target is just |ΔL|:
+  //   noisyNear: L=0.52 -> distance 0.02, variance 0.01
+  //   flatNear:  L=0.53 -> distance 0.03, variance 0.0001
+  //   flatFar:   L=0.60 -> distance 0.10, variance 0
   const noisyNear = { color: { L: 0.52, a: 0, b: 0 }, variance: 0.01, item: "noisy_near" };
+  const flatNear = { color: { L: 0.53, a: 0, b: 0 }, variance: 0.0001, item: "flat_near" };
   const flatFar = { color: { L: 0.6, a: 0, b: 0 }, variance: 0, item: "flat_far" };
+  const all = [noisyNear, flatNear, flatFar];
 
-  it("at weight 0, the nearer candidate wins regardless of its own noise (pure color match)", () => {
-    expect(findBestMatch(target, [noisyNear, flatFar], 0)).toBe("noisy_near");
+  it("at tolerance 0 the nearest color wins regardless of its own noise (pure color match)", () => {
+    expect(findBestMatch(target, all, { colorTolerance: 0 })).toBe("noisy_near");
   });
 
-  it("at weight 1, a flatter-but-farther candidate can outscore a closer-but-noisier one", () => {
-    // 0.0004 + 1*0.01 = 0.0104  >  0.01 + 1*0 = 0.01 -> flatFar wins
-    expect(findBestMatch(target, [noisyNear, flatFar], 1)).toBe("flat_far");
+  it("a candidate inside the tolerance band of the best color wins if its texture is flatter", () => {
+    // Band = nearest distance + tolerance = 0.02 + 0.02 = 0.04: flatNear
+    // (0.03) is inside it and flatter than noisyNear; flatFar (0.10) is not.
+    expect(findBestMatch(target, all, { colorTolerance: 0.02 })).toBe("flat_near");
   });
 
-  it("two equally-colored candidates break the tie toward the flatter one once variance is weighted", () => {
+  it("never lets a texture advantage buy a visibly worse color: a candidate beyond the band loses even with a perfectly flat texture", () => {
+    // The failure this rule exists to prevent. The old weighted sum scored
+    // distance² + variance, so flatFar (0.01 + 0) beat noisyNear
+    // (0.0004 + 0.01): a color 5x worse winning purely on texture.
+    expect(findBestMatch(target, [noisyNear, flatFar], { colorTolerance: DEFAULT_COLOR_TOLERANCE })).toBe(
+      "noisy_near",
+    );
+  });
+
+  it("a large enough tolerance DOES let a visibly worse color win — that is the knob's honest meaning", () => {
+    // Band = 0.02 + 0.09 = 0.11 admits flatFar (0.10), the flattest of all.
+    expect(findBestMatch(target, all, { colorTolerance: 0.09 })).toBe("flat_far");
+  });
+
+  it("two equally-colored candidates break the tie toward the flatter one, even at tolerance 0", () => {
     const flat = { color: { L: 0.7, a: 0, b: 0 }, variance: 0, item: "flat" };
     const noisySameColor = { color: { L: 0.7, a: 0, b: 0 }, variance: 0.02, item: "noisy_same_color" };
-    expect(findBestMatch(target, [noisySameColor, flat], 1)).toBe("flat");
-    // At weight 0 the two are an exact cost tie; findBestMatch keeps the
-    // first-listed candidate, same tie-break convention as findNearestOklab.
-    expect(findBestMatch(target, [noisySameColor, flat], 0)).toBe("noisy_same_color");
+    expect(findBestMatch(target, [noisySameColor, flat], { colorTolerance: 0 })).toBe("flat");
+    expect(findBestMatch(target, [noisySameColor, flat], { colorTolerance: DEFAULT_COLOR_TOLERANCE })).toBe("flat");
+  });
+
+  it("among candidates tied on flatness and cost, the nearer color wins even when it is listed later", () => {
+    const farther = { color: { L: 0.54, a: 0, b: 0 }, variance: 0, item: "farther" };
+    const nearer = { color: { L: 0.52, a: 0, b: 0 }, variance: 0, item: "nearer" };
+    expect(findBestMatch(target, [farther, nearer], { colorTolerance: 0.05 })).toBe("nearer");
+  });
+
+  it("falls back to the first-listed candidate when everything, color included, is identical", () => {
+    const first = { color: { L: 0.7, a: 0, b: 0 }, variance: 0.01, item: "first" };
+    const second = { color: { L: 0.7, a: 0, b: 0 }, variance: 0.01, item: "second" };
+    expect(findBestMatch(target, [first, second], { colorTolerance: 0 })).toBe("first");
+    expect(findBestMatch(target, [second, first], { colorTolerance: 0 })).toBe("second");
   });
 
   it("throws on an empty candidate list rather than returning a meaningless match", () => {
-    expect(() => findBestMatch(target, [], 1)).toThrow(RangeError);
+    expect(() => findBestMatch(target, [], { colorTolerance: 0 })).toThrow(RangeError);
+  });
+
+  it("rejects a negative or non-finite tolerance instead of silently matching with it", () => {
+    expect(() => findBestMatch(target, all, { colorTolerance: -0.01 })).toThrow(RangeError);
+    expect(() => findBestMatch(target, all, { colorTolerance: Number.NaN })).toThrow(RangeError);
+    expect(() => findBestMatch(target, all, { colorTolerance: Number.POSITIVE_INFINITY })).toThrow(RangeError);
   });
 
   describe("acquisitionCost tie-break", () => {
     // Two candidates with the IDENTICAL color and variance, differing
-    // only in acquisitionCost — isolates the cost term from everything
-    // else findBestMatch scores on.
+    // only in acquisitionCost — isolates the cost tie-break from
+    // everything else the matcher decides on.
     const cheap = { color: { L: 0.5, a: 0, b: 0 }, variance: 0, acquisitionCost: 0, item: "cheap" };
     const costly = { color: { L: 0.5, a: 0, b: 0 }, variance: 0, acquisitionCost: 2, item: "costly" };
 
-    it("prefers the cheaper candidate when colors tie exactly", () => {
-      expect(findBestMatch(target, [costly, cheap], 0, 0.001)).toBe("cheap");
+    it("prefers the cheaper candidate when color and flatness tie exactly", () => {
+      expect(findBestMatch(target, [costly, cheap], { colorTolerance: 0 })).toBe("cheap");
     });
 
     it("a candidate with no acquisitionCost field is treated as cost 0, same as an explicit 0", () => {
       const noCostField = { color: { L: 0.5, a: 0, b: 0 }, variance: 0, item: "no_cost_field" };
-      expect(findBestMatch(target, [costly, noCostField], 0, 0.001)).toBe("no_cost_field");
+      expect(findBestMatch(target, [costly, noCostField], { colorTolerance: 0 })).toBe("no_cost_field");
     });
 
-    it("costWeight 0 ignores acquisitionCost entirely, keeping the first-listed candidate on a full tie", () => {
-      expect(findBestMatch(target, [costly, cheap], 0, 0)).toBe("costly");
+    it("never outranks flatness: a flatter but costlier candidate beats a cheaper but busier one of the same color", () => {
+      const cheapButBusy = { color: { L: 0.5, a: 0, b: 0 }, variance: 0.01, acquisitionCost: 0, item: "cheap_but_busy" };
+      const costlyButFlat = { color: { L: 0.5, a: 0, b: 0 }, variance: 0, acquisitionCost: 2, item: "costly_but_flat" };
+      expect(findBestMatch(target, [cheapButBusy, costlyButFlat], { colorTolerance: 0 })).toBe("costly_but_flat");
     });
 
-    it("never lets a cost difference override a real, clearly-better color match (the default weight is deliberately tiny)", () => {
-      // "nearExact" is a hair off target but far cheaper than "exact";
-      // at the principled default cost weight, color accuracy still wins.
+    it("never lets a cost difference override a real, clearly-better color match", () => {
+      // "nearExact" is a hair off target but far cheaper than "exact" —
+      // it is also outside the tolerance band, so cost never even gets a say.
       const exact = { color: { L: 0.5, a: 0, b: 0 }, variance: 0, acquisitionCost: 2, item: "exact" };
       const nearExact = { color: { L: 0.6, a: 0, b: 0 }, variance: 0, acquisitionCost: 0, item: "near_exact" };
-      // costWeight omitted -> DEFAULT_COST_WEIGHT, the same default the real app uses.
-      expect(findBestMatch(target, [exact, nearExact], 0)).toBe("exact");
+      expect(findBestMatch(target, [exact, nearExact], { colorTolerance: 0 })).toBe("exact");
+      expect(findBestMatch(target, [exact, nearExact], { colorTolerance: DEFAULT_COLOR_TOLERANCE })).toBe("exact");
     });
+  });
+
+  describe("flatness resolution", () => {
+    // A perfectly flat texture's measured variance is not reliably 0: its
+    // mean is a sum divided by a pixel count, which can land one ulp away
+    // from the (identical) pixels and leave a variance near 1e-33 for one
+    // flat block and exactly 0 for the next. Real packs are full of flat
+    // blocks (concrete, terracotta, wool), so that noise must never be what
+    // picks between them. Seen for real: a dark orange resolved to
+    // red_terracotta, 0.043 away, instead of orange_terracotta, 0.029 away.
+    const nearerFlatWithFloatNoise = { color: { L: 0.52, a: 0, b: 0 }, variance: 3e-33, item: "nearer" };
+    const fartherExactlyFlat = { color: { L: 0.54, a: 0, b: 0 }, variance: 0, item: "farther" };
+
+    it("treats float-noise differences in variance as equally flat, so the nearer color wins in either listing order", () => {
+      const options = { colorTolerance: 0.05 };
+      expect(findBestMatch(target, [nearerFlatWithFloatNoise, fartherExactlyFlat], options)).toBe("nearer");
+      expect(findBestMatch(target, [fartherExactlyFlat, nearerFlatWithFloatNoise], options)).toBe("nearer");
+    });
+
+    it("still prefers a texture that is genuinely flatter", () => {
+      const slightlyBusyButNearer = { color: { L: 0.52, a: 0, b: 0 }, variance: 0.0004, item: "slightly_busy" };
+      expect(findBestMatch(target, [slightlyBusyButNearer, fartherExactlyFlat], { colorTolerance: 0.05 })).toBe(
+        "farther",
+      );
+    });
+  });
+});
+
+describe("createMatcher", () => {
+  /** A tiny deterministic LCG so the cross-check below is reproducible without a dependency. */
+  function seededRandom(seed: number): () => number {
+    let state = seed >>> 0;
+    return () => {
+      state = (Math.imul(state, 1664525) + 1013904223) >>> 0;
+      return state / 0x100000000;
+    };
+  }
+
+  it("at tolerance 0 always returns exactly the nearest candidate, first-listed on a tie (guards the band against excluding its own argmin through float rounding)", () => {
+    // sqrt(x) ** 2 can land one ulp below x, so a band computed naively
+    // can exclude the very candidate that defines it. Cross-checked
+    // against a brute-force argmin across many arbitrary targets.
+    const random = seededRandom(12345);
+    const candidates = Array.from({ length: 25 }, (_, index) => ({
+      color: { L: random(), a: random() * 0.4 - 0.2, b: random() * 0.4 - 0.2 },
+      variance: random() * 0.05,
+      item: index,
+    }));
+    const match = createMatcher(candidates, { colorTolerance: 0 });
+
+    for (let trial = 0; trial < 2000; trial++) {
+      const targetColor = { L: random(), a: random() * 0.4 - 0.2, b: random() * 0.4 - 0.2 };
+      let bestIndex = 0;
+      let bestSquared = Infinity;
+      candidates.forEach((candidate, index) => {
+        const squared = oklabDistanceSquared(targetColor, candidate.color);
+        if (squared < bestSquared) {
+          bestSquared = squared;
+          bestIndex = index;
+        }
+      });
+      expect(match(targetColor).item).toBe(bestIndex);
+    }
+  });
+
+  it("holds no state between calls: the same target resolves the same way before and after other targets", () => {
+    const candidates = [
+      { color: { L: 0.2, a: 0, b: 0 }, variance: 0, item: "dark" },
+      { color: { L: 0.8, a: 0, b: 0 }, variance: 0, item: "light" },
+    ];
+    const match = createMatcher(candidates, { colorTolerance: DEFAULT_COLOR_TOLERANCE });
+    const first = match({ L: 0.25, a: 0, b: 0 }).item;
+    match({ L: 0.9, a: 0, b: 0 });
+    match({ L: 0.5, a: 0.1, b: -0.1 });
+    expect(match({ L: 0.25, a: 0, b: 0 }).item).toBe(first);
+    expect(first).toBe("dark");
+  });
+
+  it("returns the whole winning candidate, not just its item — callers like dithering need its color too", () => {
+    const winner = { color: { L: 0.3, a: 0.05, b: 0 }, variance: 0, item: "winner" };
+    const loser = { color: { L: 0.9, a: 0, b: 0 }, variance: 0, item: "loser" };
+    expect(createMatcher([loser, winner], { colorTolerance: 0 })({ L: 0.3, a: 0.05, b: 0 })).toBe(winner);
   });
 });

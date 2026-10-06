@@ -170,8 +170,19 @@ function verticallyStripedTexture(
   return { width: size, height: size, pixels };
 }
 
-function paletteBlock(blockId: string, rgb: readonly [number, number, number]): PaletteBlock {
-  return { blockId, resourceLocation: `minecraft:${blockId}`, color: rgb8ToOklab({ r: rgb[0], g: rgb[1], b: rgb[2] }), textureVariance: 0, costTier: "common", acquisitionCost: 0 };
+function paletteBlock(
+  blockId: string,
+  rgb: readonly [number, number, number],
+  textureVariance = 0,
+): PaletteBlock {
+  return {
+    blockId,
+    resourceLocation: `minecraft:${blockId}`,
+    color: rgb8ToOklab({ r: rgb[0], g: rgb[1], b: rgb[2] }),
+    textureVariance,
+    costTier: "common",
+    acquisitionCost: 0,
+  };
 }
 
 const RED: readonly [number, number, number] = [255, 0, 0];
@@ -223,7 +234,7 @@ describe("buildVoxelGrid", () => {
     expect(voxels.every((v) => v.paletteBlock.blockId === "red_wool")).toBe(true);
   });
 
-  it("at the default variance weight, prefers a flatter candidate over a noisier one with an exact color match (the stripped-log-collapse scenario)", () => {
+  it("at the default color tolerance, prefers a flatter candidate over a noisier one whose color is only imperceptibly better (the stripped-log-collapse scenario)", () => {
     const sourceFaceTextures = uniformFaceTextures(RED);
     const exactButNoisy: PaletteBlock = {
       blockId: "noisy_red_wool",
@@ -236,25 +247,30 @@ describe("buildVoxelGrid", () => {
     const closeButFlat: PaletteBlock = {
       blockId: "flat_offred_wool",
       resourceLocation: "minecraft:flat_offred_wool",
-      color: rgb8ToOklab({ r: 235, g: 20, b: 20 }), // slightly off red, not exact
+      // Slightly off red, not exact — 0.0095 Oklab from pure red, safely
+      // inside the default 0.02 tolerance band. (The earlier (235,20,20)
+      // was 0.0386 away: a visibly worse color, which the tolerance band
+      // now correctly refuses to trade for a flatter texture.)
+      color: rgb8ToOklab({ r: 250, g: 8, b: 8 }),
       textureVariance: 0,
       costTier: "common",
       acquisitionCost: 0,
     };
     const palette = [exactButNoisy, closeButFlat];
 
-    const withVariancePenalty = buildVoxelGrid({ edgeBlocks: 4, fillStyle: "solid-full", sourceFaceTextures, palette });
-    expect(withVariancePenalty.every((v) => v.paletteBlock.blockId === "flat_offred_wool")).toBe(true);
+    const withDefaultTolerance = buildVoxelGrid({ edgeBlocks: 4, fillStyle: "solid-full", sourceFaceTextures, palette });
+    expect(withDefaultTolerance.every((v) => v.paletteBlock.blockId === "flat_offred_wool")).toBe(true);
 
-    // Explicitly at weight 0, the exact (but noisy) color match wins
-    // instead — proving the outcome above really is the variance term
-    // at work, not some other difference between the two candidates.
+    // Explicitly at tolerance 0, the exact (but noisy) color match wins
+    // instead — proving the outcome above really is the texture
+    // tie-break at work, not some other difference between the two
+    // candidates.
     const pureColorMatch = buildVoxelGrid({
       edgeBlocks: 4,
       fillStyle: "solid-full",
       sourceFaceTextures,
       palette,
-      varianceWeight: 0,
+      colorTolerance: 0,
     });
     expect(pureColorMatch.every((v) => v.paletteBlock.blockId === "noisy_red_wool")).toBe(true);
   });
@@ -428,7 +444,7 @@ describe("buildVoxelGrid", () => {
         fillStyle: "hollow",
         sourceFaceTextures,
         palette: blackWhitePalette,
-        varianceWeight: 0,
+        colorTolerance: 0,
       });
       const upBlockIds = new Set(voxels.filter((v) => v.y === 15).map((v) => v.paletteBlock.blockId));
       expect(upBlockIds.size).toBe(1);
@@ -442,8 +458,8 @@ describe("buildVoxelGrid", () => {
         fillStyle: "hollow",
         sourceFaceTextures,
         palette: blackWhitePalette,
-        varianceWeight: 0,
-        dither: { varianceWeight: 0 },
+        colorTolerance: 0,
+        dither: true,
       });
       const upBlockIds = new Set(voxels.filter((v) => v.y === 15).map((v) => v.paletteBlock.blockId));
       expect(upBlockIds.size).toBe(2);
@@ -458,7 +474,7 @@ describe("buildVoxelGrid", () => {
           fillStyle: "hollow",
           sourceFaceTextures,
           palette: blackWhitePalette,
-          dither: { varianceWeight: 0 },
+          dither: true,
         }).map((v) => `${v.x},${v.y},${v.z}:${v.paletteBlock.blockId}`);
       expect(build()).toEqual(build());
     });
@@ -486,7 +502,7 @@ describe("buildVoxelGrid", () => {
         fillStyle: "hollow",
         sourceFaceTextures,
         palette,
-        dither: { varianceWeight: 0 },
+        dither: true,
       });
       const voxelAt = new Map(voxels.map((voxel) => [`${voxel.x},${voxel.y},${voxel.z}`, voxel]));
       // Same edge voxel, same expectation as the undithered edge-blend
@@ -495,84 +511,236 @@ describe("buildVoxelGrid", () => {
     });
   });
 
-  describe("contrast preservation (BACKLOG.md 2.1)", () => {
-    it("stretches a face's own narrow lightness range so two close source shades land on distinct blocks instead of collapsing onto the same nearest one", () => {
-      const darkGray: readonly [number, number, number] = [100, 100, 100];
-      const lightGray: readonly [number, number, number] = [130, 130, 130];
-      // Every face starts flat darkGray (so the other five faces are a
-      // no-op stretch and stay out of this test's way entirely — see
-      // this module's own "per face, not shared" reasoning); only "up"
-      // gets real internal structure: top half lightGray, bottom half
-      // darkGray, a deliberately SUBTLE native difference.
+  describe("contrast enhancement (opt-in contrastGain)", () => {
+    const darkGray: readonly [number, number, number] = [100, 100, 100];
+    const lightGray: readonly [number, number, number] = [130, 130, 130];
+    // Graduated grays all the way out to black and white — exactly the
+    // palette the old full-range stretch needed in order to misbehave, and
+    // fine-grained enough near the source's own shades for a modest gain
+    // to have somewhere to land that is not an extreme.
+    const GRAY_STEPS = [0, 64, 80, 100, 115, 130, 145, 165, 190, 255];
+    const gradedGrayPalette = GRAY_STEPS.map((value) => paletteBlock(`gray_${value}`, [value, value, value]));
+
+    /** A face with a subtle (100-vs-130) pattern; every other face flat dark gray. */
+    function subtlePatternSource(): Record<CubeFaceDirection, DecodedTexture> {
       const sourceFaceTextures = uniformFaceTextures(darkGray);
       sourceFaceTextures.up = verticallyStripedTexture(16, lightGray, darkGray);
+      return sourceFaceTextures;
+    }
 
-      // Spans the full possible range, but is SPARSE near darkGray/
-      // lightGray: gray_concrete is the only candidate anywhere close to
-      // either one, so without stretching, both shades would nearest-
-      // match it alike and the subtle distinction would be lost.
-      const wideSparsePalette = [
-        paletteBlock("black_concrete", [0, 0, 0]),
-        paletteBlock("gray_concrete", [128, 128, 128]),
-        paletteBlock("white_concrete", [255, 255, 255]),
-      ];
-
+    function resolveSubtlePattern(contrastGain?: number) {
       const voxels = buildVoxelGrid({
         edgeBlocks: 16,
         fillStyle: "hollow",
-        sourceFaceTextures,
-        palette: wideSparsePalette,
+        sourceFaceTextures: subtlePatternSource(),
+        palette: gradedGrayPalette,
+        ...(contrastGain !== undefined && { contrastGain }),
       });
-      const voxelAt = new Map(voxels.map((v) => [`${v.x},${v.y},${v.z}`, v]));
+      const blockIdAt = new Map(voxels.map((voxel) => [`${voxel.x},${voxel.y},${voxel.z}`, voxel.paletteBlock.blockId]));
+      // Up face, x=8 interior, y=15 governs alone; z=2 reads texture row 2
+      // (top half = lightGray), z=13 reads row 13 (bottom half = darkGray).
+      return { lightShade: blockIdAt.get("8,15,2"), darkShade: blockIdAt.get("8,15,13"), used: distinctBlockIds(voxels) };
+    }
 
-      // Up face, (x=8 interior, y=15 governs alone, z selects texture
-      // row/v since vAxis=z and vFlip=false for y-faces): z=2 -> v=2,
-      // texture's top half -> lightGray; z=13 -> v=13, bottom half ->
-      // darkGray. lightGray is the max of its own 2-value face
-      // population, so it stretches to EXACTLY the palette's own max
-      // (white); darkGray, the min, stretches to exactly the palette's
-      // own min (black) — not just "different from each other", but
-      // pushed all the way to the two ends of what's available.
-      const topVoxel = voxelAt.get("8,15,2");
-      const bottomVoxel = voxelAt.get("8,15,13");
-      expect(topVoxel?.paletteBlock.blockId).toBe("white_concrete");
-      expect(bottomVoxel?.paletteBlock.blockId).toBe("black_concrete");
+    it("by default leaves a subtle 100-vs-130 gray pattern at its TRUE colors — each shade resolves to the gray it actually is, never to the palette's extremes", () => {
+      // This is the same fixture an earlier version pinned with the OPPOSITE
+      // expectation: it asserted these two shades land on white_concrete and
+      // black_concrete, calling that "pushed all the way to the two ends of
+      // what's available". That was the bug, written down as a requirement.
+      const resolved = resolveSubtlePattern();
+      expect(resolved.lightShade).toBe("gray_130");
+      expect(resolved.darkShade).toBe("gray_100");
+      expect(resolved.used).not.toContain("gray_0");
+      expect(resolved.used).not.toContain("gray_255");
     });
 
-    it("is a no-op for a face with no internal variation, even when the palette is wide and sparse (nothing to stretch, regardless of what any other face of the same block looks like)", () => {
-      const sourceFaceTextures = uniformFaceTextures([100, 100, 100]); // every face flat
-      const wideSparsePalette = [
-        paletteBlock("black_concrete", [0, 0, 0]),
-        paletteBlock("gray_concrete", [128, 128, 128]),
-        paletteBlock("white_concrete", [255, 255, 255]),
-      ];
-      const voxels = buildVoxelGrid({
-        edgeBlocks: 8,
-        fillStyle: "solid-full",
-        sourceFaceTextures,
-        palette: wideSparsePalette,
-      });
-      // A flat [100,100,100] source, unstretched, nearest-matches
-      // gray_concrete (128) over black (0) or white (255) — if every
-      // voxel agrees on that, nothing dragged this flat texture toward
-      // an extreme.
-      expect(voxels.every((v) => v.paletteBlock.blockId === "gray_concrete")).toBe(true);
+    it("an explicit contrastGain pushes the two shades further apart around their own average — without sending either to the palette's extremes", () => {
+      const boosted = resolveSubtlePattern(2);
+      expect(boosted.lightShade).toBe("gray_145"); // lighter than its true gray_130
+      expect(boosted.darkShade).toBe("gray_80"); // darker than its true gray_100
+      expect(boosted.used).not.toContain("gray_0");
+      expect(boosted.used).not.toContain("gray_255");
+    });
+
+    it("contrastGain 1 is exactly the same as passing none (a true no-op)", () => {
+      const sourceFaceTextures = subtlePatternSource();
+      const build = (extra: { contrastGain?: number }) =>
+        buildVoxelGrid({ edgeBlocks: 16, fillStyle: "hollow", sourceFaceTextures, palette: gradedGrayPalette, ...extra });
+      expect(build({ contrastGain: 1 })).toEqual(build({}));
+    });
+
+    it("leaves a face with no internal variation unchanged at any gain (a flat face has no deviation from its own mean to amplify)", () => {
+      const sourceFaceTextures = uniformFaceTextures(darkGray); // every face flat
+      const build = (contrastGain: number) =>
+        buildVoxelGrid({ edgeBlocks: 8, fillStyle: "solid-full", sourceFaceTextures, palette: gradedGrayPalette, contrastGain });
+      expect(distinctBlockIds(build(2))).toEqual(["gray_100"]);
+      expect(distinctBlockIds(build(1))).toEqual(["gray_100"]);
+    });
+
+    it("rejects a gain below 1 or non-finite instead of silently accepting it", () => {
+      const sourceFaceTextures = uniformFaceTextures(darkGray);
+      for (const contrastGain of [0, 0.5, Number.NaN, Number.POSITIVE_INFINITY]) {
+        expect(() =>
+          buildVoxelGrid({ edgeBlocks: 4, fillStyle: "hollow", sourceFaceTextures, palette: gradedGrayPalette, contrastGain }),
+        ).toThrow(RangeError);
+      }
     });
   });
 });
 
-describe("assessReplicaContrastHeadroom", () => {
-  it("is not palette-limited when the source's own contrast fits inside the palette's reach", () => {
-    const sourceFaceTextures = uniformFaceTextures([100, 100, 100]);
-    sourceFaceTextures.up = verticallyStripedTexture(16, [130, 130, 130], [100, 100, 100]);
-    const palette = [paletteBlock("black_concrete", [0, 0, 0]), paletteBlock("white_concrete", [255, 255, 255])];
-    expect(assessReplicaContrastHeadroom(sourceFaceTextures, palette).isPaletteLimited).toBe(false);
+// --- Absolute color fidelity ------------------------------------------
+//
+// Regression for BACKLOG-COLOR-FIX.md: a giant acacia_log (bright orange
+// top) came out in white/pale blocks, and a dark-brown mangrove_log came
+// out with white in it. Every fixture above this point is either a pure
+// primary (where the palette is built from the SAME primaries as the
+// source, so the old full-range lightness stretch happened to be an
+// identity) or pure grayscale (no hue to destroy) — so none of them could
+// ever have caught it. These use a SATURATED, NARROW-lightness-range
+// texture against a palette that holds both same-hue blocks AND the
+// near-neutral blocks (quartz, black concrete) that sit at the extremes of
+// any real palette's lightness range: exactly the combination that broke.
+
+/** Real-ish sRGB colors and texture variances for the orange/brown wood family. */
+const WOOD_BLOCK_FIXTURES: readonly (readonly [string, readonly [number, number, number], number])[] = [
+  ["acacia_planks", [169, 92, 51], 0.003],
+  ["stripped_acacia_log", [174, 98, 56], 0.0015],
+  ["orange_terracotta", [161, 83, 37], 0.0008],
+  ["mangrove_planks", [117, 54, 48], 0.003],
+  ["dark_oak_planks", [66, 43, 20], 0.0025],
+];
+
+/** The near-neutral blocks at the two ends of any real palette's lightness range. They are the ONLY blocks a lightness-range remap can land on, which is why they are what the old stretch produced. */
+const NEUTRAL_EXTREME_FIXTURES: readonly (readonly [string, readonly [number, number, number], number])[] = [
+  ["quartz_block", [236, 231, 225], 0.0003],
+  ["black_concrete", [8, 10, 15], 0.00005],
+];
+
+function paletteFromFixtures(
+  fixtures: readonly (readonly [string, readonly [number, number, number], number])[],
+): PaletteBlock[] {
+  return fixtures.map(([blockId, rgb, variance]) => paletteBlock(blockId, rgb, variance));
+}
+
+const ORANGE_FAMILY = ["acacia_planks", "stripped_acacia_log", "orange_terracotta"];
+const BROWN_FAMILY = ["mangrove_planks", "dark_oak_planks"];
+
+/** Every face flat `flatRgb` except `up`, which carries real (narrow, saturated) internal contrast — so the interesting face can't be confused with anything else in the build. */
+function narrowSaturatedSource(
+  flatRgb: readonly [number, number, number],
+  upLightRgb: readonly [number, number, number],
+  upDarkRgb: readonly [number, number, number],
+): Record<CubeFaceDirection, DecodedTexture> {
+  const sourceFaceTextures = uniformFaceTextures(flatRgb);
+  sourceFaceTextures.up = verticallyStripedTexture(16, upLightRgb, upDarkRgb);
+  return sourceFaceTextures;
+}
+
+function distinctBlockIds(voxels: readonly { readonly paletteBlock: PaletteBlock }[]): string[] {
+  return [...new Set(voxels.map((voxel) => voxel.paletteBlock.blockId))].sort();
+}
+
+describe("absolute color fidelity (a texture's hue is never traded for lightness)", () => {
+  const fullPalette = paletteFromFixtures([...WOOD_BLOCK_FIXTURES, ...NEUTRAL_EXTREME_FIXTURES]);
+
+  it("a saturated, narrow-range ORANGE face resolves to orange-family blocks — never to the palette's pale or near-black extremes", () => {
+    // acacia_log's top: two close shades of the same bright orange.
+    const sourceFaceTextures = narrowSaturatedSource([169, 92, 51], [186, 101, 52], [150, 76, 40]);
+    const voxels = buildVoxelGrid({ edgeBlocks: 16, fillStyle: "hollow", sourceFaceTextures, palette: fullPalette });
+
+    const used = distinctBlockIds(voxels);
+    expect(used).not.toContain("quartz_block");
+    expect(used).not.toContain("black_concrete");
+    for (const blockId of used) expect(ORANGE_FAMILY, `unexpected block '${blockId}'`).toContain(blockId);
   });
 
-  it("is palette-limited when a face's own contrast outstrips every enabled block", () => {
+  it("a saturated, narrow-range DARK BROWN face resolves to brown-family blocks — never white (the reported mangrove_log failure)", () => {
+    // mangrove_log: two close shades of dark red-brown.
+    const sourceFaceTextures = narrowSaturatedSource([102, 58, 51], [110, 62, 54], [78, 43, 37]);
+    const voxels = buildVoxelGrid({ edgeBlocks: 16, fillStyle: "hollow", sourceFaceTextures, palette: fullPalette });
+
+    const used = distinctBlockIds(voxels);
+    expect(used).not.toContain("quartz_block");
+    expect(used).not.toContain("black_concrete");
+    for (const blockId of used) expect(BROWN_FAMILY, `unexpected block '${blockId}'`).toContain(blockId);
+  });
+
+  it("matching is absolute, not palette-relative: adding blocks to the palette never changes which block a voxel that didn't pick them resolves to", () => {
+    // The cleanest statement of what the old full-range stretch violated.
+    // quartz_block/black_concrete are never the nearest block to any of
+    // these orange/brown pixels, so including them must change NOTHING —
+    // but under the old design they moved the palette's lightness range,
+    // which moved every single target. Any reintroduction of palette-range
+    // normalisation, in any form, fails this immediately.
+    const sourceFaceTextures = narrowSaturatedSource([169, 92, 51], [186, 101, 52], [150, 76, 40]);
+    sourceFaceTextures.north = verticallyStripedTexture(16, [110, 62, 54], [78, 43, 37]);
+    sourceFaceTextures.south = verticallyStripedTexture(16, [118, 66, 57], [102, 58, 51]);
+
+    const woodOnly = buildVoxelGrid({
+      edgeBlocks: 16,
+      fillStyle: "hollow",
+      sourceFaceTextures,
+      palette: paletteFromFixtures(WOOD_BLOCK_FIXTURES),
+    });
+    const woodPlusNeutrals = buildVoxelGrid({ edgeBlocks: 16, fillStyle: "hollow", sourceFaceTextures, palette: fullPalette });
+
+    const blockIdByPosition = (voxels: readonly { x: number; y: number; z: number; paletteBlock: PaletteBlock }[]) =>
+      new Map(voxels.map((voxel) => [`${voxel.x},${voxel.y},${voxel.z}`, voxel.paletteBlock.blockId]));
+    expect(blockIdByPosition(woodPlusNeutrals)).toEqual(blockIdByPosition(woodOnly));
+  });
+
+  it("even with contrast boost on, an orange face never reaches the palette's pale or near-black extremes (the old stretch did, at any setting)", () => {
+    const sourceFaceTextures = narrowSaturatedSource([169, 92, 51], [186, 101, 52], [150, 76, 40]);
+    for (const contrastGain of [1.5, 2]) {
+      const voxels = buildVoxelGrid({ edgeBlocks: 16, fillStyle: "hollow", sourceFaceTextures, palette: fullPalette, contrastGain });
+      const used = distinctBlockIds(voxels);
+      expect(used, `gain ${contrastGain}`).not.toContain("quartz_block");
+      expect(used, `gain ${contrastGain}`).not.toContain("black_concrete");
+    }
+  });
+
+  it("the dithered path resolves to the same colors: an orange face stays orange under dithering, with or without contrast boost", () => {
+    // Dithering shares the matcher AND the contrast targets with the
+    // undithered path (see buildDitheredFaceGrid), so it must obey the
+    // same invariant — a regression here would mean the two drifted.
+    const sourceFaceTextures = narrowSaturatedSource([169, 92, 51], [186, 101, 52], [150, 76, 40]);
+    for (const extra of [{}, { contrastGain: 2 }]) {
+      const voxels = buildVoxelGrid({
+        edgeBlocks: 16,
+        fillStyle: "hollow",
+        sourceFaceTextures,
+        palette: fullPalette,
+        dither: true,
+        ...extra,
+      });
+      const used = distinctBlockIds(voxels);
+      expect(used, JSON.stringify(extra)).not.toContain("quartz_block");
+      expect(used, JSON.stringify(extra)).not.toContain("black_concrete");
+    }
+  });
+});
+
+describe("assessReplicaContrastHeadroom", () => {
+  it("flags a block with a faint light/dark pattern on some face — what contrast enhancement is for", () => {
+    // acacia_log's end grain: two close shades of one orange; every other
+    // face perfectly flat (and so skipped — there is nothing to amplify).
+    const sourceFaceTextures = narrowSaturatedSource([169, 92, 51], [186, 101, 52], [150, 76, 40]);
+    const headroom = assessReplicaContrastHeadroom(sourceFaceTextures);
+    expect(headroom.isLowContrast).toBe(true);
+    expect(headroom.faintestPatternSpan).toBeGreaterThan(0.05);
+    expect(headroom.faintestPatternSpan).toBeLessThan(0.12);
+  });
+
+  it("does not flag a block whose patterned face has strong internal contrast", () => {
     const sourceFaceTextures = uniformFaceTextures([100, 100, 100]);
     sourceFaceTextures.up = verticallyStripedTexture(16, [255, 255, 255], [0, 0, 0]); // full black-to-white range
-    const palette = [paletteBlock("gray_concrete", [120, 120, 120]), paletteBlock("gray_concrete_2", [136, 136, 136])];
-    expect(assessReplicaContrastHeadroom(sourceFaceTextures, palette).isPaletteLimited).toBe(true);
+    expect(assessReplicaContrastHeadroom(sourceFaceTextures).isLowContrast).toBe(false);
+  });
+
+  it("does not flag a perfectly flat block: there is nothing for contrast enhancement to amplify", () => {
+    expect(assessReplicaContrastHeadroom(uniformFaceTextures([100, 100, 100]))).toEqual({
+      faintestPatternSpan: null,
+      isLowContrast: false,
+    });
   });
 });
