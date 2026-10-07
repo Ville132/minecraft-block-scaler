@@ -2,6 +2,7 @@ import { useMemo, useState } from "react";
 import { CUBE_FACE_DIRECTIONS, type CubeFaceDirection } from "../domain/faces.ts";
 import { buildLayerBreakdown, summarizeMaterialList } from "../domain/materials.ts";
 import { BlockThumbnail } from "./BlockThumbnail.tsx";
+import { Callout } from "./Callout.tsx";
 import type { BuildReplicaResult } from "./buildReplica.ts";
 import { downloadBytes, downloadText } from "./download.ts";
 import { materialListToCsv, materialListToText } from "./materialListExport.ts";
@@ -105,20 +106,20 @@ export function ResultPanel({ result, edgeBlocks }: ResultPanelProps) {
       )}
 
       {result.contrastHeadroom.isLowContrast && (
-        <p className="callout">
+        <Callout tone="info">
           Some faces of this block have only a faint light/dark pattern of their own, so the replica of them can
           read as nearly flat. "Boost contrast" in the options above exaggerates whatever pattern there is,
           while keeping each face's average color exactly as it was.
-        </p>
+        </Callout>
       )}
 
       {result.consolidation !== null && (
-        <p className="callout">
+        <Callout tone="info">
           Capped at {result.consolidation.consolidatedBlockCount} of{" "}
           {result.consolidation.originalBlockCount} distinct blocks — voxels that lost their block were
           reassigned to the closest survivor (average color shift: {result.consolidation.averageColorErrorIntroduced.toFixed(3)}
           , in Oklab distance).
-        </p>
+        </Callout>
       )}
 
       <h2 className="preview-heading">Preview</h2>

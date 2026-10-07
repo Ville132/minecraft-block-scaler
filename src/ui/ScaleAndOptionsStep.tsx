@@ -1,6 +1,7 @@
 import { useMemo, useState } from "react";
 import { DEFAULT_COLOR_TOLERANCE } from "../domain/color.ts";
 import { DEFAULT_CONTRAST_GAIN } from "../domain/contrast.ts";
+import { Callout } from "./Callout.tsx";
 import { classifyScale, hollowBlockCount, listScaleOptions, solidBlockCount, type ScaleClassification } from "../domain/scale.ts";
 import type { FillStyle } from "../domain/shell.ts";
 
@@ -213,18 +214,18 @@ export function ScaleAndOptionsStep({
         </p>
       )}
       {customClassification?.kind === "distorted" && (
-        <p className="callout warn">
+        <Callout tone="warn">
           {customSizeValue} doesn't divide or multiply {texturePixelsPerSide} evenly — the texture's pixel grid
           won't line up,
           so the replica will look smeared rather than a clean scaled-up version. The sizes listed above all
           keep the original look.
-        </p>
+        </Callout>
       )}
       {edgeBlocks !== null && blockCountFor(edgeBlocks, fillStyle) > MAX_VOXELS_BEFORE_WARNING && (
-        <p className="callout warn">
+        <Callout tone="warn">
           That's {blockCountFor(edgeBlocks, fillStyle).toLocaleString()} blocks — large enough to freeze your
           browser for a while when building. Consider a smaller size{fillStyle !== "hollow" ? " or the hollow-shell fill style" : ""}.
-        </p>
+        </Callout>
       )}
 
       <div className="fill-style-row">

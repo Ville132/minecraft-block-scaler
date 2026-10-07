@@ -16,6 +16,7 @@ import {
 import { VANILLA_TEXTURE_SIZE_PX } from "../domain/scale.ts";
 import type { FillStyle } from "../domain/shell.ts";
 import { ArchiveUploadStep } from "./ArchiveUploadStep.tsx";
+import { Callout } from "./Callout.tsx";
 import { BlockPickerStep } from "./BlockPickerStep.tsx";
 import { buildReplica, resolveSourceTexturePixelsPerSide, type BuildReplicaResult } from "./buildReplica.ts";
 import { ResultPanel } from "./ResultPanel.tsx";
@@ -326,17 +327,17 @@ export function App() {
           {isBuilding ? "Building…" : result !== null && resultIsStale ? "Rebuild replica" : "Build replica"}
         </button>
         {result !== null && resultIsStale && (
-          <p className="callout warn">
+          <Callout tone="warn">
             Your options have changed since this result was built — it's still shown below, but rebuild to see
             the effect of your latest change.
-          </p>
+          </Callout>
         )}
         {(onlyWoodFillMaterial || avoidFlammableFillMaterial) && palette.length > 0 && fillPalette.length === 0 && (
-          <p className="callout warn">
+          <Callout tone="warn">
             "{onlyWoodFillMaterial ? "Only use wood blocks" : "Avoid flammable blocks"}" left nothing to build
             with — your archive's matching blocks were already excluded by one of the toggles above (or it
             has none at all). Try relaxing a toggle or turning this one off.
-          </p>
+          </Callout>
         )}
         {buildError !== null && <p className="error-text">{buildError}</p>}
       </section>

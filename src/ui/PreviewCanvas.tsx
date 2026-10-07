@@ -1,4 +1,4 @@
-import { useMemo } from "react";
+import { useMemo, useState } from "react";
 import { oklabToRgb8 } from "../domain/color.ts";
 import type { CubeFaceDirection } from "../domain/faces.ts";
 import { positionOnFace, type Voxel } from "../domain/shell.ts";
@@ -180,37 +180,69 @@ export function PreviewCanvas({
   sourceFaceTexture,
   usedBlockTextures,
 }: PreviewCanvasProps) {
+  const [expandedViewId, setExpandedViewId] = useState<string | null>(null);
+
   const voxelByPosition = useMemo(() => {
     const map = new Map<string, Voxel>();
     for (const voxel of voxels) map.set(`${voxel.x},${voxel.y},${voxel.z}`, voxel);
     return map;
   }, [voxels]);
 
-  return (
-    <div className="preview-grid">
-      <figure className="preview-col">
+  const views = [
+    {
+      id: "replica",
+      title: "Your replica",
+      detail: `real block textures, ${edgeBlocks}×${edgeBlocks}`,
+      canvas: (
         <RealisticReplicaFaceCanvas
           direction={direction}
           edgeBlocks={edgeBlocks}
           voxelByPosition={voxelByPosition}
           usedBlockTextures={usedBlockTextures}
         />
-        <figcaption className="caption">
-          Your replica <span>real block textures, {edgeBlocks}×{edgeBlocks}</span>
-        </figcaption>
-      </figure>
-      <figure className="preview-col">
-        <ReplicaFaceCanvas direction={direction} edgeBlocks={edgeBlocks} voxelByPosition={voxelByPosition} />
-        <figcaption className="caption">
-          Colors only <span>one flat color per block, {edgeBlocks}×{edgeBlocks}</span>
-        </figcaption>
-      </figure>
-      <figure className="preview-col">
-        <OriginalTextureCanvas texture={sourceFaceTexture} />
-        <figcaption className="caption">
-          Original block <span>what you are copying, {direction}</span>
-        </figcaption>
-      </figure>
+      ),
+    },
+    {
+      id: "colors",
+      title: "Colors only",
+      detail: `one flat color per block, ${edgeBlocks}×${edgeBlocks}`,
+      canvas: <ReplicaFaceCanvas direction={direction} edgeBlocks={edgeBlocks} voxelByPosition={voxelByPosition} />,
+    },
+    {
+      id: "original",
+      title: "Original block",
+      detail: `what you are copying, ${direction}`,
+      canvas: <OriginalTextureCanvas texture={sourceFaceTexture} />,
+    },
+  ];
+
+  return (
+    <div className="preview-grid">
+      {views.map((view) => {
+        const isExpanded = expandedViewId === view.id;
+        return (
+          <figure className="preview-col" key={view.id} data-expanded={isExpanded}>
+            {/*
+              Expanding widens the view to the full row rather than opening an
+              overlay — it needs no focus trap, no Escape handling and no
+              scroll lock, and the realistic canvas stops being downscaled at
+              that width, which is the actual reason to want it bigger.
+            */}
+            <button
+              type="button"
+              className="preview-zoom"
+              aria-expanded={isExpanded}
+              aria-label={`${isExpanded ? "Shrink" : "Enlarge"} ${view.title}`}
+              onClick={() => setExpandedViewId(isExpanded ? null : view.id)}
+            >
+              {view.canvas}
+            </button>
+            <figcaption className="caption">
+              {view.title} <span>{view.detail}</span>
+            </figcaption>
+          </figure>
+        );
+      })}
     </div>
   );
 }
