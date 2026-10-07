@@ -310,17 +310,29 @@ export function App() {
           Build
           {sourceBlockId !== null && <span className="step-context">scaling {sourceBlockId}</span>}
         </h2>
-        <button type="button" className="primary" disabled={!canBuild || isBuilding} onClick={handleBuild}>
+        <button
+          type="button"
+          className="primary"
+          disabled={!canBuild || isBuilding}
+          data-busy={isBuilding}
+          // Draws the eye only while building is genuinely the outstanding
+          // action: before the first build, and after an option change has
+          // left the shown result stale. Once the result matches the options,
+          // the download below is the thing to reach for, and two buttons
+          // competing for attention would just be noise.
+          data-cta={result === null || resultIsStale}
+          onClick={handleBuild}
+        >
           {isBuilding ? "Building…" : result !== null && resultIsStale ? "Rebuild replica" : "Build replica"}
         </button>
         {result !== null && resultIsStale && (
-          <p className="hint-text">
+          <p className="callout warn">
             Your options have changed since this result was built — it's still shown below, but rebuild to see
             the effect of your latest change.
           </p>
         )}
         {(onlyWoodFillMaterial || avoidFlammableFillMaterial) && palette.length > 0 && fillPalette.length === 0 && (
-          <p className="error-text">
+          <p className="callout warn">
             "{onlyWoodFillMaterial ? "Only use wood blocks" : "Avoid flammable blocks"}" left nothing to build
             with — your archive's matching blocks were already excluded by one of the toggles above (or it
             has none at all). Try relaxing a toggle or turning this one off.

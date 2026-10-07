@@ -1,10 +1,12 @@
 import { useMemo, useState } from "react";
 import { CUBE_FACE_DIRECTIONS, type CubeFaceDirection } from "../domain/faces.ts";
 import { buildLayerBreakdown, summarizeMaterialList } from "../domain/materials.ts";
+import { BlockThumbnail } from "./BlockThumbnail.tsx";
 import type { BuildReplicaResult } from "./buildReplica.ts";
 import { downloadBytes, downloadText } from "./download.ts";
 import { materialListToCsv, materialListToText } from "./materialListExport.ts";
 import { PreviewCanvas } from "./PreviewCanvas.tsx";
+import { useCountUp } from "./useCountUp.ts";
 
 /** What to type into the Windows Run dialog (Win+R) to jump straight to the schematics folder — same trick as `ArchiveUploadStep.tsx`'s `WINDOWS_RUN_PATH`, pointed at the sibling `schematics` folder instead of `versions/26.3`. */
 const WINDOWS_SCHEMATICS_RUN_PATH = String.raw`%appdata%\.minecraft\schematics`;
@@ -15,6 +17,17 @@ function formatPropertiesForDisplay(properties: Readonly<Record<string, string>>
   return Object.entries(properties)
     .map(([key, value]) => `${key}=${value}`)
     .join(", ");
+}
+
+/** One headline figure from the finished build. The number counts up on reveal — see `useCountUp` for why that one animation is JavaScript rather than CSS. */
+function Stat({ value, label }: { readonly value: number; readonly label: string }) {
+  const displayed = useCountUp(value);
+  return (
+    <div className="stat">
+      <span className="stat-value">{displayed.toLocaleString()}</span>
+      <span className="stat-label">{label}</span>
+    </div>
+  );
 }
 
 export interface ResultPanelProps {
@@ -30,6 +43,13 @@ export function ResultPanel({ result, edgeBlocks }: ResultPanelProps) {
 
   const totals = useMemo(() => summarizeMaterialList(result.materialList), [result.materialList]);
   const layers = useMemo(() => buildLayerBreakdown(result.voxels), [result.voxels]);
+  // `MaterialListEntry` carries no color, so the fallback chip for a block
+  // whose texture is missing is sourced from the voxels the list was built
+  // from — which necessarily covers every block the list can name.
+  const colorByBlockId = useMemo(
+    () => new Map(result.voxels.map((voxel) => [voxel.paletteBlock.blockId, voxel.paletteBlock.color])),
+    [result.voxels],
+  );
   // Every other download this panel offers is named after the build
   // (schematicFileName's own "<sourceBlockId>_x<edgeBlocks>" stem) so
   // that building several configs from the same source block doesn't
@@ -60,33 +80,32 @@ export function ResultPanel({ result, edgeBlocks }: ResultPanelProps) {
   }
 
   return (
-    <section className="step">
+    <section className="step step-result">
       <h2>
         <span className="step-number">5</span>
-        Material list &amp; schematic
+        Your replica
+        <span className="step-context">
+          {edgeBlocks}³ · {result.fileName}
+        </span>
       </h2>
 
-      <p className="hint-text">
-        {totalBlocks.toLocaleString()} blocks total across {result.materialList.length} block type
-        {result.materialList.length === 1 ? "" : "s"}.
-        {result.interiorFillBlockId !== null && (
-          <>
-            {" "}
-            The hidden interior uses <code>{result.interiorFillBlockId}</code> — cheap and never visible, so it
-            wasn't color-matched.
-          </>
-        )}
-      </p>
+      <div className="stat-row">
+        <Stat value={totalBlocks} label="blocks total" />
+        <Stat value={result.materialList.length} label={`block type${result.materialList.length === 1 ? "" : "s"}`} />
+        <Stat value={totals.shulkerBoxes} label={`shulker box${totals.shulkerBoxes === 1 ? "" : "es"}`} />
+        <Stat value={totals.inventoryLoads} label={`inventory trip${totals.inventoryLoads === 1 ? "" : "s"}`} />
+        <Stat value={totals.recommendedWithSpares} label="gather with ~10% spare" />
+      </div>
 
-      <p className="hint-text">
-        Roughly {totals.shulkerBoxes.toLocaleString()} shulker box{totals.shulkerBoxes === 1 ? "" : "es"} worth,{" "}
-        {totals.inventoryLoads.toLocaleString()} full-inventory trip{totals.inventoryLoads === 1 ? "" : "s"} to
-        carry it all. Consider gathering {totals.recommendedWithSpares.toLocaleString()} total for a ~10% margin
-        against mistakes.
-      </p>
+      {result.interiorFillBlockId !== null && (
+        <p className="hint-text">
+          The hidden interior uses <code>{result.interiorFillBlockId}</code> — cheap and never visible, so it
+          wasn't color-matched.
+        </p>
+      )}
 
       {result.contrastHeadroom.isLowContrast && (
-        <p className="hint-text">
+        <p className="callout">
           Some faces of this block have only a faint light/dark pattern of their own, so the replica of them can
           read as nearly flat. "Boost contrast" in the options above exaggerates whatever pattern there is,
           while keeping each face's average color exactly as it was.
@@ -94,7 +113,7 @@ export function ResultPanel({ result, edgeBlocks }: ResultPanelProps) {
       )}
 
       {result.consolidation !== null && (
-        <p className="hint-text">
+        <p className="callout">
           Capped at {result.consolidation.consolidatedBlockCount} of{" "}
           {result.consolidation.originalBlockCount} distinct blocks — voxels that lost their block were
           reassigned to the closest survivor (average color shift: {result.consolidation.averageColorErrorIntroduced.toFixed(3)}
@@ -102,6 +121,28 @@ export function ResultPanel({ result, edgeBlocks }: ResultPanelProps) {
         </p>
       )}
 
+      <h2 className="preview-heading">Preview</h2>
+      <div className="face-tabs">
+        {CUBE_FACE_DIRECTIONS.map((direction) => (
+          <button
+            key={direction}
+            type="button"
+            data-active={direction === previewFace}
+            onClick={() => setPreviewFace(direction)}
+          >
+            {direction}
+          </button>
+        ))}
+      </div>
+      <PreviewCanvas
+        direction={previewFace}
+        edgeBlocks={edgeBlocks}
+        voxels={result.voxels}
+        sourceFaceTexture={result.sourceFaceTextures[previewFace]}
+        usedBlockTextures={result.usedBlockTextures}
+      />
+
+      <h2 className="preview-heading">Materials</h2>
       <div className="material-table-wrap">
         <table className="material-table">
           <thead>
@@ -117,7 +158,17 @@ export function ResultPanel({ result, edgeBlocks }: ResultPanelProps) {
           <tbody>
             {result.materialList.map((entry) => (
               <tr key={entry.blockId}>
-                <td className="block-name">{entry.resourceLocation}</td>
+                <td className="block-name">
+                  <span className="block-cell">
+                    <BlockThumbnail
+                      texture={result.usedBlockTextures.get(entry.blockId)?.up}
+                      // Safe to assert: the material list is derived from these
+                      // very voxels, so it cannot name a block they don't contain.
+                      averageColor={colorByBlockId.get(entry.blockId)!}
+                    />
+                    {entry.resourceLocation}
+                  </span>
+                </td>
                 <td className="count primary">{entry.count.toLocaleString()}</td>
                 <td className="count">{entry.breakdown.shulkerBoxes || "–"}</td>
                 <td className="count">{entry.breakdown.stacks || "–"}</td>
@@ -197,27 +248,6 @@ export function ResultPanel({ result, edgeBlocks }: ResultPanelProps) {
         it → <strong>Load Schematic</strong>. That shows a ghost outline of the whole build where you're
         standing, which is what you place blocks into by hand, one at a time.
       </p>
-
-      <h2 className="preview-heading">Preview</h2>
-      <div className="face-tabs">
-        {CUBE_FACE_DIRECTIONS.map((direction) => (
-          <button
-            key={direction}
-            type="button"
-            data-active={direction === previewFace}
-            onClick={() => setPreviewFace(direction)}
-          >
-            {direction}
-          </button>
-        ))}
-      </div>
-      <PreviewCanvas
-        direction={previewFace}
-        edgeBlocks={edgeBlocks}
-        voxels={result.voxels}
-        sourceFaceTexture={result.sourceFaceTextures[previewFace]}
-        usedBlockTextures={result.usedBlockTextures}
-      />
     </section>
   );
 }

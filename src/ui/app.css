@@ -1,37 +1,87 @@
 :root {
-  --bg: #16140f;
-  --bg-top: #1b1812;
-  --panel: #201d17;
-  --panel-raised: #2a251d;
-  --panel-hover: #332c22;
-  --border: #3c352a;
-  --border-strong: #52483a;
+  /*
+   * Surfaces. The steps between these are what make the UI read as layered
+   * rather than flat, and on near-black surfaces WCAG contrast ratio is the
+   * wrong gauge for that — its +0.05 floor reports every one of these pairs
+   * as ~1.1:1 whether they are distinguishable or not. They are tuned in
+   * perceptual lightness instead (Oklab L*, the same space `domain/color.ts`
+   * matches blocks in): each step below is >= 5 L* apart, where ~4 is roughly
+   * where two dark surfaces start reading as separate layers. An earlier
+   * ramp sat at 3.0-4.0 and the whole app looked like one flat sheet.
+   */
+  --bg: #100e0a;
+  --panel: #211d16;
+  --panel-raised: #312b21;
+  --panel-hover: #413829;
+  --border: #544936;
+  --border-strong: #7a6a51;
+
   --text: #f2ece0;
   --text-dim: #ab9f8c;
-  --text-faint: #786e5c;
+  /* Light enough to clear WCAG AA (4.95:1 on --panel); the previous #786e5c was 3.34:1. */
+  --text-faint: #968a77;
+
   --accent: #8ec85a;
   --accent-bright: #a8e078;
   --accent-dim: #4f7a3a;
   --accent-ink: #15220d;
   --accent-glow: rgba(142, 200, 90, 0.28);
+  /* A quiet fill behind something selected or checked — loud enough to read as a state, far below --accent-glow, which at that size reads as a solid colour. */
+  --accent-tint: rgba(142, 200, 90, 0.14);
+  --accent-hairline: rgba(142, 200, 90, 0.22);
   --warn: #e3ae4d;
   --warn-glow: rgba(227, 174, 77, 0.2);
+
+  /*
+   * The page's background wash. These alphas are load-bearing, not decoration:
+   * the wash sits directly behind the step cards, so raising it lifts the PAGE
+   * toward the card and erases the edge between them. At the 0.07 it started
+   * at, the page under a card measured BRIGHTER than the card itself —
+   * figure and ground inverted, in exactly the top-left region where the first
+   * two cards sit. At 0.04 the card clears the washed page by 4 L*, which is
+   * about where an edge becomes legible. Raise these and the cards flatten.
+   */
+  --wash-accent: rgba(142, 200, 90, 0.04);
+  --wash-warm: rgba(227, 174, 77, 0.03);
   --danger: #e3635e;
   --danger-glow: rgba(227, 99, 94, 0.2);
+
+  /* Gold rather than the accent green, so a focused control never reads as a selected one. */
   --focus: #f0c968;
+  --focus-ring: 0 0 0 3px rgba(240, 201, 104, 0.45);
 
   --radius-sm: 6px;
   --radius-md: 10px;
   --radius-lg: 16px;
 
-  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.35);
-  --shadow-md: 0 6px 16px -4px rgba(0, 0, 0, 0.45);
-  --shadow-lg: 0 16px 40px -8px rgba(0, 0, 0, 0.55);
-  --shadow-inset: inset 0 1px 0 rgba(255, 255, 255, 0.04);
+  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.4);
+  --shadow-md: 0 6px 16px -4px rgba(0, 0, 0, 0.5);
+  --shadow-lg: 0 16px 40px -8px rgba(0, 0, 0, 0.6);
+  /* Contact shadow plus a wide ambient one: a single shadow makes a card look printed on the page rather than resting above it. */
+  --shadow-card: 0 1px 2px rgba(0, 0, 0, 0.4), 0 10px 28px -14px rgba(0, 0, 0, 0.65);
+  --shadow-inset: inset 0 1px 0 rgba(255, 255, 255, 0.05);
+
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 20px;
+  --space-6: 24px;
+  --space-7: 32px;
+  --space-8: 48px;
+
+  /* Named for the scale, not for any one use, so a size is never picked by what it happens to equal today. */
+  --type-xs: 11px;
+  --type-sm: 12px;
+  --type-base: 13px;
+  --type-md: 15px;
+  --type-lg: 21px;
+  --type-xl: 27px;
 
   --ease: cubic-bezier(0.4, 0, 0.2, 1);
   --fast: 140ms var(--ease);
   --normal: 220ms var(--ease);
+  --slow: 320ms var(--ease);
 
   --font-sans: "Inter", -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
   --font-mono: "JetBrains Mono", ui-monospace, "SF Mono", Menlo, Consolas, monospace;
@@ -48,8 +98,16 @@
   *::before,
   *::after {
     animation-duration: 0.001ms !important;
+    /*
+     * Delays must be zeroed as well as durations, or a staggered entrance
+     * gets WORSE here than it is without the preference: the step cards use
+     * `backwards` fill, so each one holds its `from` keyframe — opacity 0 —
+     * for the whole delay and then pops into place.
+     */
+    animation-delay: 0ms !important;
     animation-iteration-count: 1 !important;
     transition-duration: 0.001ms !important;
+    transition-delay: 0ms !important;
     scroll-behavior: auto !important;
   }
 }
@@ -85,12 +143,12 @@ html {
 body {
   margin: 0;
   min-height: 100vh;
-  background: radial-gradient(1100px 620px at 14% -8%, rgba(142, 200, 90, 0.07), transparent 60%),
-    radial-gradient(900px 500px at 100% 0%, rgba(227, 174, 77, 0.05), transparent 55%), var(--bg);
+  background: radial-gradient(1100px 620px at 14% -8%, var(--wash-accent), transparent 60%),
+    radial-gradient(900px 500px at 100% 0%, var(--wash-warm), transparent 55%), var(--bg);
   background-attachment: fixed;
   color: var(--text);
   font-family: var(--font-sans);
-  font-size: 15px;
+  font-size: var(--type-md);
   line-height: 1.5;
   -webkit-font-smoothing: antialiased;
   text-rendering: optimizeLegibility;
@@ -99,12 +157,12 @@ body {
 #root {
   max-width: 1000px;
   margin: 0 auto;
-  padding: 40px 20px 72px;
+  padding: var(--space-8) var(--space-5) 72px;
 }
 
 @media (max-width: 600px) {
   #root {
-    padding: 24px 14px 56px;
+    padding: var(--space-6) var(--space-3) var(--space-8);
   }
 }
 
@@ -118,8 +176,8 @@ body {
 .app-header {
   display: flex;
   align-items: center;
-  gap: 14px;
-  margin-bottom: 8px;
+  gap: var(--space-3);
+  margin-bottom: var(--space-2);
 }
 
 .logo-cube {
@@ -128,11 +186,11 @@ body {
 }
 
 h1 {
-  font-size: 26px;
+  font-size: var(--type-xl);
   font-weight: 800;
   letter-spacing: -0.01em;
   margin: 0;
-  background: linear-gradient(180deg, var(--text) 0%, #d8cfbc 100%);
+  background: linear-gradient(180deg, var(--text) 0%, var(--text-dim) 120%);
   -webkit-background-clip: text;
   background-clip: text;
   color: transparent;
@@ -140,8 +198,8 @@ h1 {
 
 .subtitle {
   color: var(--text-dim);
-  margin: 10px 0 32px;
-  font-size: 14.5px;
+  margin: 10px 0 var(--space-7);
+  font-size: var(--type-md);
   max-width: 56ch;
 }
 
@@ -152,10 +210,39 @@ h1 {
   background: linear-gradient(180deg, var(--panel-raised) 0%, var(--panel) 100%);
   border: 1px solid var(--border);
   border-radius: var(--radius-lg);
-  padding: 22px 24px;
-  margin-bottom: 18px;
-  box-shadow: var(--shadow-sm), var(--shadow-inset);
+  padding: var(--space-6);
+  margin-bottom: var(--space-4);
+  box-shadow: var(--shadow-card), var(--shadow-inset);
   transition: opacity var(--normal), filter var(--normal), border-color var(--normal), box-shadow var(--normal);
+  /* Fires once per mount, so the five cards stagger in on load and a fresh
+   * ResultPanel animates in on each build — but nothing re-animates on a
+   * state change, since React re-renders these rather than remounting them. */
+  animation: fade-up var(--normal) backwards;
+}
+
+/*
+ * The steps are the only <section>s in <main> but not its only children (a
+ * header div and the subtitle come first), so they are indexed by type — with
+ * :nth-child the stagger would start two cards in.
+ */
+.step:nth-of-type(2) {
+  animation-delay: 60ms;
+}
+.step:nth-of-type(3) {
+  animation-delay: 120ms;
+}
+.step:nth-of-type(4) {
+  animation-delay: 180ms;
+}
+/*
+ * The result panel is the fifth section, but it is the only one that mounts on
+ * its own long after page load, so it must NOT inherit the load stagger's
+ * delay — that would leave the payoff invisible for a quarter second after a
+ * build. It gets its own slower, more deliberate entrance instead.
+ */
+.step.step-result {
+  animation: fade-up var(--slow) backwards;
+  animation-delay: 0ms;
 }
 
 .step::before {
@@ -164,8 +251,12 @@ h1 {
   inset: 0;
   border-radius: inherit;
   padding: 1px;
-  background: linear-gradient(135deg, rgba(142, 200, 90, 0.22), transparent 40%);
+  background: linear-gradient(135deg, var(--accent-hairline), transparent 40%);
+  /* Both spellings on purpose: without the unprefixed pair, an engine that
+   * lacks -webkit-mask paints this gradient across the whole card instead of
+   * confining it to the 1px border. */
   -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+  mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
   -webkit-mask-composite: xor;
   mask-composite: exclude;
   pointer-events: none;
@@ -173,19 +264,19 @@ h1 {
 }
 
 .step[data-disabled="true"] {
-  opacity: 0.4;
-  filter: saturate(0.6);
+  opacity: 0.45;
+  filter: saturate(0.5);
   pointer-events: none;
   box-shadow: none;
 }
 
 .step h2 {
-  font-size: 13.5px;
+  font-size: var(--type-base);
   text-transform: uppercase;
   letter-spacing: 0.08em;
   color: var(--text-dim);
   font-weight: 700;
-  margin: 0 0 16px;
+  margin: 0 0 var(--space-4);
   display: flex;
   align-items: center;
   gap: 10px;
@@ -197,7 +288,7 @@ h1 {
   letter-spacing: normal;
   font-weight: 400;
   font-family: var(--font-mono);
-  font-size: 12px;
+  font-size: var(--type-sm);
   color: var(--text-dim);
   opacity: 0.8;
 }
@@ -211,7 +302,7 @@ h1 {
   background: linear-gradient(155deg, var(--accent) 0%, var(--accent-dim) 100%);
   color: var(--accent-ink);
   border-radius: var(--radius-sm);
-  font-size: 12px;
+  font-size: var(--type-sm);
   font-weight: 800;
   box-shadow: var(--shadow-sm);
   flex-shrink: 0;
@@ -244,12 +335,6 @@ button:active:not(:disabled) {
   box-shadow: none;
 }
 
-button:focus-visible {
-  outline: none;
-  box-shadow: 0 0 0 3px var(--accent-glow);
-  border-color: var(--accent);
-}
-
 button:disabled {
   cursor: not-allowed;
   opacity: 0.45;
@@ -276,6 +361,50 @@ button.primary:disabled {
   box-shadow: none;
 }
 
+/*
+ * The primary button breathes only while it IS the next thing to do (see
+ * `data-cta` in `App.tsx`) — an always-on pulse is noise, one that keeps going
+ * while a build runs reads as "still waiting for you" when the app is the one
+ * working, and every `.primary` pulsing at once would mean none of them
+ * pointed anywhere.
+ */
+button.primary[data-cta="true"]:not(:disabled):not([data-busy="true"]) {
+  animation: cta-glow 2.4s var(--ease) infinite;
+}
+
+@keyframes cta-glow {
+  0%,
+  100% {
+    box-shadow: 0 4px 14px -4px rgba(142, 200, 90, 0.45);
+  }
+  50% {
+    box-shadow: 0 4px 20px -2px rgba(142, 200, 90, 0.68);
+  }
+}
+
+/* A sheen travelling across the button is the only honest progress signal available: the build is synchronous, so it reports "working", never how far along. */
+button.primary[data-busy="true"] {
+  position: relative;
+  overflow: hidden;
+}
+
+button.primary[data-busy="true"]::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(100deg, transparent 20%, rgba(255, 255, 255, 0.35) 50%, transparent 80%);
+  animation: sheen 1.2s linear infinite;
+}
+
+@keyframes sheen {
+  from {
+    transform: translateX(-100%);
+  }
+  to {
+    transform: translateX(100%);
+  }
+}
+
 /* ---------- Inputs ---------- */
 
 input[type="file"] {
@@ -299,11 +428,27 @@ input[type="number"]:hover {
   border-color: var(--text-faint);
 }
 
-input[type="text"]:focus,
-input[type="number"]:focus {
-  outline: none;
-  border-color: var(--accent);
-  box-shadow: 0 0 0 3px var(--accent-glow);
+/*
+ * One focus treatment for every interactive surface, including the four that
+ * previously had none — the checkbox/radio pill labels, the layer-breakdown
+ * summary, and the drop zone, whose real <input type="file"> is
+ * .visually-hidden so focusing it used to show nothing at all.
+ *
+ * The transparent outline rides along with the ring on purpose: box-shadow is
+ * not painted in forced-colors mode, where an outline is, so the indicator
+ * survives there instead of vanishing.
+ */
+button:focus-visible,
+summary:focus-visible,
+input[type="text"]:focus-visible,
+input[type="number"]:focus-visible,
+label.checkbox:has(input:focus-visible),
+.fill-style-row label:has(input:focus-visible),
+.drop-zone:has(input:focus-visible) {
+  outline: 2px solid transparent;
+  outline-offset: 2px;
+  box-shadow: var(--focus-ring);
+  border-color: var(--focus);
 }
 
 input[type="radio"],
@@ -318,7 +463,9 @@ label.checkbox {
   display: flex;
   align-items: center;
   gap: 9px;
-  font-size: 13px;
+  /* These labels are full sentences, and the longest ("Survival-friendly only…") is wider than a phone. Without this a flex item refuses to shrink below its content and pushes its row sideways. */
+  max-width: 100%;
+  font-size: var(--type-base);
   color: var(--text-dim);
   cursor: pointer;
   user-select: none;
@@ -354,7 +501,7 @@ label.checkbox:has(input:checked) {
   border: 2px dashed var(--border-strong);
   border-radius: var(--radius-md);
   color: var(--text-dim);
-  font-size: 13.5px;
+  font-size: var(--type-md);
   cursor: pointer;
   background: radial-gradient(500px 160px at 50% 0%, rgba(142, 200, 90, 0.05), transparent);
   transition: border-color var(--normal), background var(--normal), transform var(--fast);
@@ -407,9 +554,10 @@ label.checkbox:has(input:checked) {
   border: 0;
 }
 
+/* Reserved for something that actually FAILED. Advisories that merely warn use `.callout.warn` — styling them identically made every caution look like a breakage. */
 .error-text {
   color: var(--danger);
-  font-size: 13px;
+  font-size: var(--type-base);
   margin-top: 10px;
   padding: 9px 12px;
   background: var(--danger-glow);
@@ -419,7 +567,92 @@ label.checkbox:has(input:checked) {
 
 .hint-text {
   color: var(--text-dim);
-  font-size: 13px;
+  font-size: var(--type-base);
+  /* Owns its spacing instead of inheriting the UA's 1em top AND bottom, which gave every helper line the same generous gap as a paragraph of prose and was a large part of why they read as one undifferentiated block. */
+  margin: var(--space-2) 0 0;
+}
+
+/* Widths in `ch` because what these fields must fit is a number of digits, not a number of pixels. */
+.input-custom-size {
+  width: 12ch;
+}
+
+.input-distinct-cap {
+  width: 6ch;
+}
+
+.block-search {
+  /* `min()` so the search box shrinks with a narrow card instead of forcing the step to scroll sideways. */
+  width: min(100%, 26ch);
+  margin-bottom: var(--space-2);
+}
+
+/* The "N of M blocks match" line. Mono and tabular so the count doesn't reflow the sentence as the user types. */
+.result-count {
+  margin: 0 0 var(--space-2);
+  font-family: var(--font-mono);
+  font-size: var(--type-sm);
+  font-variant-numeric: tabular-nums;
+  color: var(--text-faint);
+}
+
+/*
+ * A step up from `.hint-text` for the handful of lines that are worth
+ * noticing rather than merely available. Deliberately only two weights of
+ * emphasis exist (hint, callout) — with 19 hint paragraphs in the app, a
+ * third tier would just restore the uniformity this exists to break.
+ */
+.callout {
+  color: var(--text-dim);
+  font-size: var(--type-base);
+  margin: var(--space-3) 0 0;
+  padding: 10px var(--space-3);
+  background: var(--panel-raised);
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--accent);
+  border-radius: var(--radius-sm);
+}
+
+.callout.warn {
+  border-left-color: var(--warn);
+  /* --warn-glow, not --wash-warm: the page wash is tuned to stay invisible, which is the opposite of what a notice wants. */
+  background: var(--warn-glow);
+  color: var(--text);
+}
+
+/* ---------- Result stat tiles ---------- */
+
+.stat-row {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(128px, 1fr));
+  gap: var(--space-2);
+  margin-bottom: var(--space-4);
+}
+
+.stat {
+  background: var(--panel-raised);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  padding: var(--space-3) var(--space-3) 10px;
+}
+
+.stat-value {
+  display: block;
+  font-size: var(--type-lg);
+  font-weight: 800;
+  line-height: 1.15;
+  color: var(--accent-bright);
+  /* Digits must not jitter while the value counts up on reveal. */
+  font-variant-numeric: tabular-nums;
+}
+
+.stat-label {
+  display: block;
+  margin-top: var(--space-1);
+  font-size: var(--type-xs);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--text-faint);
 }
 
 .file-path-list {
@@ -490,7 +723,7 @@ code {
   border: 1px solid var(--border);
   border-radius: var(--radius-sm);
   text-align: left;
-  font-size: 12.5px;
+  font-size: var(--type-sm);
   color: var(--text);
   overflow: hidden;
   transition: border-color var(--fast), transform var(--fast), box-shadow var(--fast), background var(--fast);
@@ -526,12 +759,20 @@ code {
 }
 
 .swatch {
-  width: 19px;
-  height: 19px;
+  /* Sized by whoever places it, so a block picker tile and a table row can share one chip without either overriding the other's dimensions. */
+  width: var(--swatch-size, 19px);
+  height: var(--swatch-size, 19px);
   border-radius: 4px;
+  /* Black-and-white frame rather than themed borders: the fill is arbitrary block colour, so only colour-independent edges are guaranteed to read against it. */
   border: 1px solid rgba(0, 0, 0, 0.35);
   box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.08);
   flex-shrink: 0;
+}
+
+/* A `.swatch` that is a real texture rather than a flat fill — a 16px image blown up to a chip, so it must not be smoothed into mush. */
+canvas.swatch {
+  image-rendering: pixelated;
+  display: block;
 }
 
 .block-tile .label {
@@ -539,15 +780,17 @@ code {
   overflow: hidden;
   text-overflow: ellipsis;
   font-family: var(--font-mono);
-  font-size: 11.5px;
+  font-size: var(--type-xs);
 }
 
 .options-row {
   display: flex;
   flex-wrap: wrap;
+  /* Centred rather than stretched: every one of these rows pairs a pill-shaped label with a shorter input or button, and the default `stretch` made the short one grow to the tall one's height. */
+  align-items: center;
   gap: 10px;
-  margin-top: 16px;
-  padding-top: 16px;
+  margin-top: var(--space-4);
+  padding-top: var(--space-4);
   border-top: 1px solid var(--border);
 }
 
@@ -610,13 +853,15 @@ code {
   display: inline-flex;
   align-items: center;
   gap: 5px;
-  font-size: 10.5px;
+  font-size: var(--type-xs);
   text-transform: uppercase;
   letter-spacing: 0.04em;
   font-weight: 700;
   padding: 3px 7px;
   border-radius: 999px;
   margin: 6px 0 9px;
+  /* A 999px radius only reads as a pill on one line; wrapping "EXACT · 1×1 PER PIXEL" inside it looked like a rendering fault. */
+  white-space: nowrap;
 }
 
 .fidelity::before {
@@ -629,13 +874,19 @@ code {
 }
 
 .fidelity.exact {
-  background: rgba(142, 200, 90, 0.16);
+  background: var(--accent-tint);
   color: var(--accent);
 }
 
 .fidelity.reduced {
   background: var(--warn-glow);
   color: var(--warn);
+}
+
+/* Completes the exact/reduced/distorted set — without this a distorted size (reachable only through the custom-size input) rendered as unstyled inherited text. */
+.fidelity.distorted {
+  background: var(--danger-glow);
+  color: var(--danger);
 }
 
 .scale-card .counts {
@@ -722,7 +973,7 @@ code {
   color: var(--text-dim);
   font-weight: 700;
   text-transform: uppercase;
-  font-size: 10.5px;
+  font-size: var(--type-xs);
   letter-spacing: 0.06em;
   border-bottom: 1px solid var(--border);
 }
@@ -746,7 +997,15 @@ code {
 
 .material-table td.block-name {
   font-family: var(--font-mono);
-  font-size: 12.5px;
+  font-size: var(--type-sm);
+}
+
+/* Pairs a block's picture with its id. A material list is read while shopping for blocks, so being able to recognise one by sight beats reading 20 near-identical namespaced ids. */
+.block-cell {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  --swatch-size: 22px;
 }
 
 .material-table th.count,
@@ -801,7 +1060,7 @@ code {
   display: flex;
   gap: 10px;
   padding: 7px 14px;
-  font-size: 12.5px;
+  font-size: var(--type-sm);
   border-bottom: 1px solid var(--border);
 }
 
@@ -840,33 +1099,67 @@ code {
 
 /* ---------- Preview ---------- */
 
-.preview-row {
-  display: flex;
-  gap: 24px;
-  align-items: flex-start;
-  margin-top: 16px;
-  flex-wrap: wrap;
+/*
+ * The replica itself is the point of the whole app, so the views get as much
+ * room as the column allows instead of the fixed 220px thumbnails they used
+ * to be. The track minimum is mirrored by `MIN_PREVIEW_DISPLAY_PX` in
+ * `PreviewCanvas.tsx`, which uses it to decide how each canvas is filtered.
+ */
+.preview-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  gap: var(--space-4);
+  margin-top: var(--space-4);
 }
 
 .preview-col {
   display: flex;
   flex-direction: column;
-  gap: 9px;
-  align-items: center;
+  gap: 10px;
+  margin: 0;
+  padding: var(--space-3);
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  transition: border-color var(--fast), box-shadow var(--fast);
+}
+
+.preview-col:hover {
+  border-color: var(--border-strong);
+  /* The deepest elevation in the app, reserved for the one thing the whole app exists to produce. */
+  box-shadow: var(--shadow-lg);
 }
 
 .preview-col .caption {
-  font-size: 12px;
-  color: var(--text-dim);
+  font-size: var(--type-sm);
+  font-weight: 600;
+  color: var(--text);
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.preview-col .caption span {
+  font-weight: 400;
   font-family: var(--font-mono);
+  font-size: var(--type-xs);
+  color: var(--text-faint);
 }
 
 .preview-col canvas {
-  image-rendering: pixelated;
+  /* The backing store keeps its own size; only the drawn size is fluid, so enlarging these costs nothing and recovers detail the old downscale threw away. */
+  width: 100%;
+  height: auto;
+  aspect-ratio: 1;
   border: 1px solid var(--border-strong);
   border-radius: var(--radius-sm);
   background: #0c0b09;
-  box-shadow: var(--shadow-md);
+  box-shadow: var(--shadow-md), inset 0 0 0 1px rgba(0, 0, 0, 0.4);
+}
+
+/* See `scalingOf` in `PreviewCanvas.tsx` — hard pixels when magnified, smooth when minified. */
+.preview-col canvas[data-scaling="up"] {
+  image-rendering: pixelated;
 }
 
 .face-tabs {
@@ -932,6 +1225,7 @@ code {
   }
 }
 
+/* Applied by `.step` — see the animation declaration there. */
 @keyframes fade-up {
   from {
     opacity: 0;
@@ -941,10 +1235,6 @@ code {
     opacity: 1;
     transform: translateY(0);
   }
-}
-
-.step {
-  animation: fade-up var(--normal);
 }
 
 .footer-note {

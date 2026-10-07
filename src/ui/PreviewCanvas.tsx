@@ -1,28 +1,32 @@
-import { useEffect, useMemo, useRef } from "react";
+import { useMemo } from "react";
 import { oklabToRgb8 } from "../domain/color.ts";
 import type { CubeFaceDirection } from "../domain/faces.ts";
 import { positionOnFace, type Voxel } from "../domain/shell.ts";
 import type { DecodedTexture } from "../assets/textureDecoder.ts";
+import { useRenderedCanvas } from "./useRenderedCanvas.ts";
 
-const DISPLAY_SIZE_PX = 220;
+/**
+ * The narrowest a preview canvas is ever laid out at — see `.preview-grid` in
+ * `app.css`, whose track minimum this mirrors.
+ *
+ * It is the threshold for {@link scalingOf}: a backing store no wider than
+ * this is guaranteed to be drawn larger than it is, whatever the viewport.
+ */
+const MIN_PREVIEW_DISPLAY_PX = 240;
 
-function useRenderedCanvas(width: number, height: number, draw: (imageData: ImageData) => void) {
-  const canvasRef = useRef<HTMLCanvasElement>(null);
-  useEffect(() => {
-    const canvas = canvasRef.current;
-    if (canvas === null) return;
-    const context = canvas.getContext("2d");
-    if (context === null) return;
-    const imageData = context.createImageData(width, height);
-    draw(imageData);
-    context.putImageData(imageData, 0, 0);
-    // `draw` must stay in the dependency list even though `width`/
-    // `height` are listed too: switching, say, the previewed face can
-    // change `draw`'s captured data (a different texture or direction)
-    // while leaving the canvas's own dimensions unchanged, and only
-    // `draw`'s identity (a fresh closure each render) catches that.
-  }, [width, height, draw]);
-  return canvasRef;
+/**
+ * Whether a canvas of `backingSizePx` will be drawn larger than life, which
+ * decides how the browser should fill in between its pixels.
+ *
+ * Blowing one texel up to a visible square is the whole point of these views,
+ * so an upscaled canvas must stay hard-edged (`pixelated`). Shrinking one is
+ * the opposite case: nearest-neighbour DOWNsampling just throws pixels away
+ * and aliases what is left, so a dense canvas is left to interpolate
+ * smoothly. The 512px realistic view squeezed into 220px used to do exactly
+ * that, and came out visibly grainier than the two views beside it.
+ */
+function scalingOf(backingSizePx: number): "up" | "down" {
+  return backingSizePx <= MIN_PREVIEW_DISPLAY_PX ? "up" : "down";
 }
 
 interface OriginalTextureCanvasProps {
@@ -35,12 +39,7 @@ function OriginalTextureCanvas({ texture }: OriginalTextureCanvasProps) {
     imageData.data.set(texture.pixels);
   });
   return (
-    <canvas
-      ref={canvasRef}
-      width={texture.width}
-      height={texture.height}
-      style={{ width: DISPLAY_SIZE_PX, height: DISPLAY_SIZE_PX }}
-    />
+    <canvas ref={canvasRef} width={texture.width} height={texture.height} data-scaling={scalingOf(texture.width)} />
   );
 }
 
@@ -67,14 +66,7 @@ function ReplicaFaceCanvas({ direction, edgeBlocks, voxelByPosition }: ReplicaFa
       }
     }
   });
-  return (
-    <canvas
-      ref={canvasRef}
-      width={edgeBlocks}
-      height={edgeBlocks}
-      style={{ width: DISPLAY_SIZE_PX, height: DISPLAY_SIZE_PX }}
-    />
-  );
+  return <canvas ref={canvasRef} width={edgeBlocks} height={edgeBlocks} data-scaling={scalingOf(edgeBlocks)} />;
 }
 
 /** The realistic preview's own canvas pixel budget — independent of `edgeBlocks`, which can run into the hundreds. Large enough to show real texture detail per voxel tile, small enough to stay a fast, synchronous `putImageData` call. */
@@ -170,14 +162,7 @@ function RealisticReplicaFaceCanvas({
     }
   });
 
-  return (
-    <canvas
-      ref={canvasRef}
-      width={canvasSizePx}
-      height={canvasSizePx}
-      style={{ width: DISPLAY_SIZE_PX, height: DISPLAY_SIZE_PX }}
-    />
-  );
+  return <canvas ref={canvasRef} width={canvasSizePx} height={canvasSizePx} data-scaling={scalingOf(canvasSizePx)} />;
 }
 
 export interface PreviewCanvasProps {
@@ -202,24 +187,30 @@ export function PreviewCanvas({
   }, [voxels]);
 
   return (
-    <div className="preview-row">
-      <div className="preview-col">
-        <span className="caption">Original texture ({direction})</span>
-        <OriginalTextureCanvas texture={sourceFaceTexture} />
-      </div>
-      <div className="preview-col">
-        <span className="caption">Replica face — real textures ({edgeBlocks}×{edgeBlocks})</span>
+    <div className="preview-grid">
+      <figure className="preview-col">
         <RealisticReplicaFaceCanvas
           direction={direction}
           edgeBlocks={edgeBlocks}
           voxelByPosition={voxelByPosition}
           usedBlockTextures={usedBlockTextures}
         />
-      </div>
-      <div className="preview-col">
-        <span className="caption">Replica face — average color ({edgeBlocks}×{edgeBlocks})</span>
+        <figcaption className="caption">
+          Your replica <span>real block textures, {edgeBlocks}×{edgeBlocks}</span>
+        </figcaption>
+      </figure>
+      <figure className="preview-col">
         <ReplicaFaceCanvas direction={direction} edgeBlocks={edgeBlocks} voxelByPosition={voxelByPosition} />
-      </div>
+        <figcaption className="caption">
+          Colors only <span>one flat color per block, {edgeBlocks}×{edgeBlocks}</span>
+        </figcaption>
+      </figure>
+      <figure className="preview-col">
+        <OriginalTextureCanvas texture={sourceFaceTexture} />
+        <figcaption className="caption">
+          Original block <span>what you are copying, {direction}</span>
+        </figcaption>
+      </figure>
     </div>
   );
 }

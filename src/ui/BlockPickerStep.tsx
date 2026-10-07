@@ -79,7 +79,7 @@ export function BlockPickerStep({
             placeholder="Search blocks…"
             value={search}
             onChange={(event) => setSearch(event.target.value)}
-            style={{ marginBottom: 10, width: 220 }}
+            className="block-search"
           />
           {allBlocks.length === 0 ? (
             isReady ? (
@@ -93,7 +93,7 @@ export function BlockPickerStep({
           ) : (
             <>
               {search.trim() !== "" && (
-                <p className="hint-text" style={{ marginBottom: 8 }}>
+                <p className="result-count">
                   {visibleBlocks.length} of {allBlocks.length} block{allBlocks.length === 1 ? "" : "s"} match
                   {visibleBlocks.length === 0 ? ` — nothing found for "${search.trim()}"` : ""}
                 </p>
@@ -117,14 +117,14 @@ export function BlockPickerStep({
           )}
 
           {axisVariantBlocks.length > 0 && (
-            <p className="hint-text" style={{ marginTop: 8 }}>
+            <p className="hint-text">
               Logs and other pillar-shaped blocks can be built standing up or lying down — pick one to
               choose.
             </p>
           )}
 
           {selectedIsAxisVariant && (
-            <div className="fill-style-row" style={{ marginTop: 10, paddingTop: 10 }}>
+            <div className="fill-style-row">
               <label>
                 <input
                   type="radio"

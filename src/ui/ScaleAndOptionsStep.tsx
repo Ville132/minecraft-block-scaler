@@ -81,14 +81,24 @@ function blockCountFor(edgeBlocks: number, fillStyle: FillStyle): number {
 }
 
 /** `listScaleOptions` never offers a "distorted" size, but `classifyScale`'s return type covers it anyway — handled exhaustively here rather than assumed away. */
-function fidelityLabel(classification: ScaleClassification): string {
+/**
+ * How a size lines up the replica's blocks with the source texture's pixels,
+ * as a short line to sit under the size itself. `null` for a distorted size,
+ * which by definition has no whole-number ratio to state.
+ *
+ * Kept OUT of the `.fidelity` pill it used to share: "exact · 1×1 per pixel"
+ * is 155px wide, and a `.scale-grid` track bottoms out near 150px, so the
+ * combined string spilled out of its own card at several viewport widths.
+ * The pill now carries only the verdict, which always fits.
+ */
+function fidelityDetail(classification: ScaleClassification): string | null {
   switch (classification.kind) {
     case "exact":
-      return `exact · ${classification.blocksPerPixel}×${classification.blocksPerPixel} per pixel`;
+      return `${classification.blocksPerPixel}×${classification.blocksPerPixel} blocks per pixel`;
     case "reduced":
-      return `reduced · ${classification.pixelsPerBlock}×${classification.pixelsPerBlock}px/block`;
+      return `${classification.pixelsPerBlock}×${classification.pixelsPerBlock} px per block`;
     case "distorted":
-      return "distorted";
+      return null;
   }
 }
 
@@ -144,6 +154,7 @@ export function ScaleAndOptionsStep({
       <div className="scale-grid">
         {scaleOptions.map((edge) => {
           const classification = classifyScale(edge, texturePixelsPerSide);
+          const detail = fidelityDetail(classification);
           const hollow = hollowBlockCount(edge);
           const solid = solidBlockCount(edge);
           return (
@@ -155,8 +166,14 @@ export function ScaleAndOptionsStep({
               onClick={() => onEdgeBlocksChange(edge)}
             >
               <div className="edge">{edge}³</div>
-              <span className={`fidelity ${classification.kind}`}>{fidelityLabel(classification)}</span>
+              <span className={`fidelity ${classification.kind}`}>{classification.kind}</span>
               <div className="counts">
+                {detail !== null && (
+                  <>
+                    {detail}
+                    <br />
+                  </>
+                )}
                 hollow: {hollow.toLocaleString()}
                 <br />
                 solid: {solid.toLocaleString()}
@@ -166,7 +183,7 @@ export function ScaleAndOptionsStep({
         })}
       </div>
 
-      <div className="options-row" style={{ alignItems: "center" }}>
+      <div className="options-row">
         <span className="hint-text">Need a size outside the list above?</span>
         <input
           type="number"
@@ -175,7 +192,7 @@ export function ScaleAndOptionsStep({
           placeholder="custom size"
           value={customSizeText}
           onChange={(event) => setCustomSizeText(event.target.value)}
-          style={{ width: 110 }}
+          className="input-custom-size"
         />
         <button
           type="button"
@@ -184,6 +201,10 @@ export function ScaleAndOptionsStep({
         >
           Use this size
         </button>
+        {/* The listed sizes are all exact, so this is the ONLY place a reduced or distorted size can be chosen — and until it was shown here, picking one gave no signal at all. */}
+        {customClassification !== null && (
+          <span className={`fidelity ${customClassification.kind}`}>{customClassification.kind}</span>
+        )}
       </div>
       {customSizeIsInRange && customSizeValue > MAX_CUSTOM_EDGE_BLOCKS && (
         <p className="error-text">
@@ -192,7 +213,7 @@ export function ScaleAndOptionsStep({
         </p>
       )}
       {customClassification?.kind === "distorted" && (
-        <p className="error-text">
+        <p className="callout warn">
           {customSizeValue} doesn't divide or multiply {texturePixelsPerSide} evenly — the texture's pixel grid
           won't line up,
           so the replica will look smeared rather than a clean scaled-up version. The sizes listed above all
@@ -200,7 +221,7 @@ export function ScaleAndOptionsStep({
         </p>
       )}
       {edgeBlocks !== null && blockCountFor(edgeBlocks, fillStyle) > MAX_VOXELS_BEFORE_WARNING && (
-        <p className="error-text">
+        <p className="callout warn">
           That's {blockCountFor(edgeBlocks, fillStyle).toLocaleString()} blocks — large enough to freeze your
           browser for a while when building. Consider a smaller size{fillStyle !== "hollow" ? " or the hollow-shell fill style" : ""}.
         </p>
@@ -285,7 +306,7 @@ export function ScaleAndOptionsStep({
         block — but the result is speckled: more accurate from a distance, noisier up close.
       </p>
 
-      <div className="options-row" style={{ alignItems: "center" }}>
+      <div className="options-row">
         <label
           className="checkbox"
           title="Keeps only the N most-used blocks in the finished build and reassigns every voxel that used a dropped block to whichever surviving block is now closest in color. A build with dozens of distinct block types, many used only a handful of times, is hard to finish by hand — this trades a little color accuracy for far fewer materials to go find."
@@ -308,7 +329,7 @@ export function ScaleAndOptionsStep({
             const parsed = Number.parseInt(event.target.value, 10);
             if (Number.isInteger(parsed) && parsed > 0) onMaxDistinctBlocksChange(parsed);
           }}
-          style={{ width: 60 }}
+          className="input-distinct-cap"
         />
       </div>
     </section>
