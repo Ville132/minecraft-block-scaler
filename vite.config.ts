@@ -6,6 +6,8 @@ import packageJson from "./package.json" with { type: "json" };
 // so package.json stays the single source of truth (CLAUDE.md requires
 // the running version to always be reportable).
 export default defineConfig({
+  // Relative URLs let the same build work at the domain root and below a sub-path such as /block-scaler/.
+  base: "./",
   plugins: [react()],
   define: {
     __APP_VERSION__: JSON.stringify(packageJson.version),
