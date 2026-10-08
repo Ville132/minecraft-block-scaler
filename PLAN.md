@@ -216,4 +216,4 @@ dimensions match, no block shows as unknown, and the overlay reads as the source
 - ~~Not implemented: IndexedDB caching~~ — added in v0.2.0 (`src/assets/archiveCache.ts`): a successful
   upload is cached and restored automatically on the next visit, with a "Use a different file" control to
   replace it.
-- Deployed: `https://minecraft-block-scaler.up.railway.app`.
+- Deployed inside the app hub (`../app-collection`) at `https://nattuggla-production.up.railway.app/block-scaler/`; it was a standalone Railway service before v0.16.0.

@@ -29,11 +29,10 @@ size, and build.
 | Command | What it does |
 | --- | --- |
 | `pnpm dev` | Starts the Vite dev server |
-| `pnpm build` | Typechecks and builds the production bundle (app + server) |
-| `pnpm start` | Runs the production static server (after `pnpm build`) |
+| `pnpm build` | Typechecks and builds the production bundle into `dist/` |
 | `pnpm test` | Runs the test suite once |
 | `pnpm test:watch` | Runs tests in watch mode |
-| `pnpm typecheck` | Typechecks the app and the server with no emit |
+| `pnpm typecheck` | Typechecks the app with no emit |
 
 ## How it works, briefly
 
