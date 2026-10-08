@@ -1,6 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100" shape-rendering="crispEdges">
   <!-- A Minecraft-style grass block, drawn from scratch rather than traced from
-       the game textures. The identical file is imported by App.tsx as src/ui/grass-block.svg;
+       the game textures. The identical file is served as public/favicon.svg;
        change both together. -->
   <polygon points="50,6 90,27 50,48 10,27" fill="#8ec85a"/>
   <polygon points="10,27 50,48 50,94 10,73" fill="#9a6a44"/>

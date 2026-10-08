@@ -15,6 +15,7 @@ import {
 } from "../domain/palette.ts";
 import { VANILLA_TEXTURE_SIZE_PX } from "../domain/scale.ts";
 import type { FillStyle } from "../domain/shell.ts";
+import grassBlockLogoUrl from "./grass-block.svg";
 import { ArchiveUploadStep } from "./ArchiveUploadStep.tsx";
 import { Callout } from "./Callout.tsx";
 import { BlockPickerStep } from "./BlockPickerStep.tsx";
@@ -199,18 +200,11 @@ export function App() {
   return (
     <main>
       <div className="app-header">
-        <svg
-          className="logo-cube"
-          width="34"
-          height="34"
-          viewBox="0 0 100 100"
-          aria-hidden="true"
-          focusable="false"
-        >
-          <polygon points="50,6 90,27 50,48 10,27" fill="#a3df7c" />
-          <polygon points="10,27 50,48 50,94 10,73" fill="#6a9e4c" />
-          <polygon points="90,27 50,48 50,94 90,73" fill="#487338" />
-        </svg>
+        {/* Imported rather than inlined so the header and the browser-tab icon
+            cannot drift apart, and so Vite resolves the URL against the app's
+            base — the build is served from a sub-path. `alt=""` marks it
+            decorative: the <h1> beside it already names the app. */}
+        <img className="logo-cube" src={grassBlockLogoUrl} width="34" height="34" alt="" />
         <h1>Minecraft Block Scaler</h1>
       </div>
       <p className="subtitle">
