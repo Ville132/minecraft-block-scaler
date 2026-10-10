@@ -115,21 +115,78 @@ describe("pixelRegionForVoxelCoord", () => {
 
 describe("positionOnFace", () => {
   it("places (u, v) on the correct boundary plane for each direction", () => {
-    // v is always y (true vertical) on the four side faces — east/west
-    // use u=z (the "around" axis), not u=y, so that a texture's up
-    // direction renders consistently on every side (see faceScreenAxes's
-    // doc comment for the real-world bug this fixes). On those same four
-    // faces v=7 lands at y=8 (16-1-7), not y=7: a decoded PNG's row 0 is
-    // its TOP, but world y=0 is the build's BOTTOM, so v must mirror y
-    // or every side face renders upside down (faceScreenAxes's doc
-    // comment again, the second bug it fixes). down/up have no such
-    // flip — v stays z directly on those two.
-    expect(positionOnFace("down", 5, 7, 16)).toEqual({ x: 5, y: 0, z: 7 });
+    // v runs DOWN the real vertical on the four side faces, so v=7 lands
+    // at y=8 (16-1-7): a decoded texture's row 0 is its top, world y=0 the
+    // build's bottom. u runs the opposite way on opposite faces — x=10 on
+    // north but x=5 on south, z=10 on east but z=5 on west — because the
+    // two are seen from opposite sides. This test used to pin north, east
+    // and down to the same direction as their opposites, which is exactly
+    // the mirror that showed up in-game on a mangrove log.
+    expect(positionOnFace("down", 5, 7, 16)).toEqual({ x: 5, y: 0, z: 8 });
     expect(positionOnFace("up", 5, 7, 16)).toEqual({ x: 5, y: 15, z: 7 });
-    expect(positionOnFace("north", 5, 7, 16)).toEqual({ x: 5, y: 8, z: 0 });
+    expect(positionOnFace("north", 5, 7, 16)).toEqual({ x: 10, y: 8, z: 0 });
     expect(positionOnFace("south", 5, 7, 16)).toEqual({ x: 5, y: 8, z: 15 });
     expect(positionOnFace("west", 5, 7, 16)).toEqual({ x: 0, y: 8, z: 5 });
-    expect(positionOnFace("east", 5, 7, 16)).toEqual({ x: 15, y: 8, z: 5 });
+    expect(positionOnFace("east", 5, 7, 16)).toEqual({ x: 15, y: 8, z: 10 });
+  });
+
+  it("never mirrors a face: on all six, the texture's u × v points into the cube", () => {
+    // A texture reads correctly — not as its mirror image — to someone
+    // standing outside a face exactly when its columns-cross-rows points
+    // inward. This is pure geometry, independent of any game convention,
+    // and it is the check that would have caught north, east and down all
+    // being mirrored: every earlier test used either a solid colour or a
+    // vertically-striped texture, and neither can tell a mirror apart.
+    const inward: Record<CubeFaceDirection, readonly [number, number, number]> = {
+      down: [0, 1, 0],
+      up: [0, -1, 0],
+      north: [0, 0, 1],
+      south: [0, 0, -1],
+      west: [1, 0, 0],
+      east: [-1, 0, 0],
+    };
+    const minus = (a: { x: number; y: number; z: number }, b: { x: number; y: number; z: number }) =>
+      [a.x - b.x, a.y - b.y, a.z - b.z] as const;
+    for (const direction of CUBE_FACE_DIRECTIONS) {
+      const origin = positionOnFace(direction, 5, 5, 16);
+      const [ux, uy, uz] = minus(positionOnFace(direction, 6, 5, 16), origin);
+      const [vx, vy, vz] = minus(positionOnFace(direction, 5, 6, 16), origin);
+      // "+ 0" turns any -0 into 0: toEqual compares with Object.is, which tells them apart.
+      const cross = [uy * vz - uz * vy, uz * vx - ux * vz, ux * vy - uy * vx].map((component) => component + 0);
+      expect(cross, direction).toEqual(inward[direction]);
+    }
+  });
+
+  it("is the exact inverse of how the build samples the source, on every face", () => {
+    // Every pixel of this texture is a different colour, and every colour is
+    // its own palette block — so the block a voxel resolves to names the
+    // exact source pixel it was matched against. Reading the build back
+    // through positionOnFace must then land on pixel (u, v) at every (u, v):
+    // if the two disagreed, the preview would show a different face from the
+    // one that gets built.
+    const size = 8;
+    const colorAt = (u: number, v: number): readonly [number, number, number] => [30 + u * 28, 30 + v * 28, 90];
+    const texture = textureFromPixels(size, colorAt);
+    const sourceFaceTextures = Object.fromEntries(CUBE_FACE_DIRECTIONS.map((d) => [d, texture])) as Record<
+      CubeFaceDirection,
+      DecodedTexture
+    >;
+    const palette: PaletteBlock[] = [];
+    for (let u = 0; u < size; u++) for (let v = 0; v < size; v++) palette.push(paletteBlock(`p${u}_${v}`, colorAt(u, v)));
+
+    const voxels = buildVoxelGrid({ edgeBlocks: size, fillStyle: "hollow", sourceFaceTextures, palette });
+    const blockIdAt = new Map(voxels.map((voxel) => [`${voxel.x},${voxel.y},${voxel.z}`, voxel.paletteBlock.blockId]));
+
+    // The interior of each face only: rims are owned by a neighbouring face
+    // or blended with it, so they name no single pixel of this face.
+    for (const direction of CUBE_FACE_DIRECTIONS) {
+      for (let u = 1; u < size - 1; u++) {
+        for (let v = 1; v < size - 1; v++) {
+          const { x, y, z } = positionOnFace(direction, u, v, size);
+          expect(blockIdAt.get(`${x},${y},${z}`), `${direction} (${u},${v})`).toBe(`p${u}_${v}`);
+        }
+      }
+    }
   });
 
   it("is always on the shell, for any (u, v)", () => {
@@ -140,6 +197,47 @@ describe("positionOnFace", () => {
           expect(isShellVoxel(x, y, z, 16)).toBe(true);
         }
       }
+    }
+  });
+});
+
+describe("a replica looks the same from every side its source does", () => {
+  it("shows a log's bark identically on all four sides, walked left to right by someone standing outside each", () => {
+    // The in-game report this pins: on a mangrove log, two of the four sides
+    // had the bark's tones and texture suddenly change. All four sides of a
+    // real log carry the identical bark, so the replica's four must match.
+    // The bark here climbs left to right, so a mirrored side reads backwards.
+    const size = 16;
+    const bark = textureFromPixels(size, (u) => [20 + u * 15, 60, 60]);
+    const cap = solidTexture(size, [200, 180, 120]);
+    const sourceFaceTextures = { up: cap, down: cap, north: bark, south: bark, east: bark, west: bark };
+    const palette = [
+      ...Array.from({ length: size }, (_, u) => paletteBlock(`column_${u}`, [20 + u * 15, 60, 60])),
+      paletteBlock("cap", [200, 180, 120]),
+    ];
+    const voxels = buildVoxelGrid({ edgeBlocks: size, fillStyle: "hollow", sourceFaceTextures, palette });
+    const blockIdAt = new Map(voxels.map((voxel) => [`${voxel.x},${voxel.y},${voxel.z}`, voxel.paletteBlock.blockId]));
+
+    // World positions along the middle row of each side face, in the order an
+    // observer outside it sees them from left to right. With +x east and +z
+    // south, the observer's right is -x on north, +x on south, -z on east and
+    // +z on west.
+    const last = size - 1;
+    const middle = 8;
+    const leftToRight: Record<"north" | "south" | "east" | "west", (i: number) => string> = {
+      north: (i) => `${last - i},${middle},0`,
+      south: (i) => `${i},${middle},${last}`,
+      east: (i) => `${last},${middle},${last - i}`,
+      west: (i) => `0,${middle},${i}`,
+    };
+    // The two end voxels are corners, shared with the neighbouring side.
+    const interiorOf = (side: keyof typeof leftToRight) =>
+      Array.from({ length: size - 2 }, (_, i) => blockIdAt.get(leftToRight[side](i + 1)));
+
+    const south = interiorOf("south");
+    expect(south[0]).toBe("column_1"); // reads left to right, not reversed
+    for (const side of ["north", "east", "west"] as const) {
+      expect(interiorOf(side), side).toEqual(south);
     }
   });
 });
@@ -155,6 +253,21 @@ function solidTexture(size: number, rgb: readonly [number, number, number]): Dec
     pixels[i + 1] = rgb[1];
     pixels[i + 2] = rgb[2];
     pixels[i + 3] = 255;
+  }
+  return { width: size, height: size, pixels };
+}
+
+/** A texture whose pixel at column `u`, row `v` is `colorAt(u, v)` — for fixtures that must be asymmetric in BOTH directions, which is the only kind that can tell a mirror from a correct face. */
+function textureFromPixels(
+  size: number,
+  colorAt: (u: number, v: number) => readonly [number, number, number],
+): DecodedTexture {
+  const pixels = new Uint8ClampedArray(size * size * 4);
+  for (let v = 0; v < size; v++) {
+    for (let u = 0; u < size; u++) {
+      const [r, g, b] = colorAt(u, v);
+      pixels.set([r, g, b, 255], (v * size + u) * 4);
+    }
   }
   return { width: size, height: size, pixels };
 }
@@ -314,7 +427,7 @@ describe("buildVoxelGrid", () => {
     // green_wool at (15,13,8): the opposite of these).
     //
     // (These expectations are also where the separate vertical-flip fix
-    // in faceScreenAxes shows up: a decoded PNG's row 0 is its own top,
+    // in faces.ts's faceTextureFrame shows up: a decoded PNG's row 0 is its own top,
     // but world y=0 is the build's BOTTOM, so low y correctly shows the
     // texture's BOTTOM half here, not its top — the reverse of what an
     // earlier version of this same test asserted, back when that second

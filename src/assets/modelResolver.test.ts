@@ -42,6 +42,8 @@ const CUBE_ALL_MODEL = {
   },
 };
 
+const UNTURNED = { down: 0, up: 0, north: 0, south: 0, east: 0, west: 0 } as const;
+
 /** The real cobblestone/cube_all/cube chain, parametrized so tests can override one file at a time. */
 function cubeAllArchive(overrides: Record<string, unknown> = {}): MinecraftArchive {
   return archiveOf({
@@ -71,6 +73,7 @@ describe("resolveCanonicalVariantCubeModel — single-variant happy path", () =>
         west: "block/cobblestone",
       },
       tintedFaces: { down: false, up: false, north: false, south: false, east: false, west: false },
+      faceTextureTurns: UNTURNED,
     });
     expect(result?.properties).toEqual({});
   });
@@ -304,10 +307,11 @@ describe("resolveCanonicalVariantCubeModel — rejections", () => {
 // A faithful miniature of oak_log's real data (fetched from Mojang's
 // actual asset files during development): axis=y uses the base
 // cube_column model with no rotation; axis=z and axis=x reference a
-// SEPARATE "_horizontal" model whose local face layout is identical,
-// reoriented purely by the blockstate's own x/y rotation fields. This
-// is the real mechanism (see domain/faces.ts's rotateFaceDirection) —
-// not three different models, one model rotated two different ways.
+// SEPARATE "_horizontal" model with the same end/side layout, reoriented
+// by the blockstate's own x/y rotation fields (see domain/faces.ts's
+// rotateFaceDirection). The one difference, also Mojang's: the horizontal
+// model turns its up face's end grain 180°, so that once rotated, both end
+// caps stand upright.
 const PILLAR_ELEMENT_FACES = {
   down: { texture: "#end" },
   up: { texture: "#end" },
@@ -317,6 +321,9 @@ const PILLAR_ELEMENT_FACES = {
   west: { texture: "#side" },
 };
 const PILLAR_CUBE_ELEMENTS = [{ from: [0, 0, 0], to: [16, 16, 16], faces: PILLAR_ELEMENT_FACES }];
+const HORIZONTAL_PILLAR_CUBE_ELEMENTS = [
+  { from: [0, 0, 0], to: [16, 16, 16], faces: { ...PILLAR_ELEMENT_FACES, up: { texture: "#end", rotation: 180 } } },
+];
 
 function oakLogArchive(overrides: Record<string, unknown> = {}): MinecraftArchive {
   return archiveOf({
@@ -336,7 +343,7 @@ function oakLogArchive(overrides: Record<string, unknown> = {}): MinecraftArchiv
       textures: { end: "minecraft:block/oak_log_top", side: "minecraft:block/oak_log" },
     },
     "assets/minecraft/models/block/cube_column.json": { elements: PILLAR_CUBE_ELEMENTS },
-    "assets/minecraft/models/block/cube_column_horizontal.json": { elements: PILLAR_CUBE_ELEMENTS },
+    "assets/minecraft/models/block/cube_column_horizontal.json": { elements: HORIZONTAL_PILLAR_CUBE_ELEMENTS },
     ...overrides,
   });
 }
@@ -380,6 +387,7 @@ describe("resolveAxisVariantCubeModel", () => {
         west: "block/oak_log",
       },
       tintedFaces: { down: false, up: false, north: false, south: false, east: false, west: false },
+      faceTextureTurns: UNTURNED,
     });
   });
 
@@ -395,7 +403,36 @@ describe("resolveAxisVariantCubeModel", () => {
         west: "block/oak_log",
       },
       tintedFaces: { down: false, up: false, north: false, south: false, east: false, west: false },
+      // Bark turned a quarter on east and west, so its grain runs along the
+      // log; the north cap's half turn from the rotation and the model's own
+      // half turn cancel, leaving both caps upright.
+      faceTextureTurns: { down: 180, up: 0, north: 0, south: 0, east: 90, west: 270 },
     });
+  });
+
+  it("keeps textures aligned with the world under uvlock, so only a face's own rotation turns one", () => {
+    const archive = oakLogArchive({
+      "assets/minecraft/blockstates/oak_log.json": {
+        variants: {
+          "axis=y": { model: "minecraft:block/oak_log" },
+          "axis=z": { model: "minecraft:block/oak_log_horizontal", x: 90, uvlock: true },
+          "axis=x": { model: "minecraft:block/oak_log_horizontal", x: 90, y: 90 },
+        },
+      },
+    });
+    expect(resolveAxisVariantCubeModel(archive, "oak_log", "sideways")?.faceTextureTurns).toEqual({
+      ...UNTURNED,
+      north: 180,
+    });
+  });
+
+  it("rejects a model face turned by something other than a multiple of 90", () => {
+    const archive = oakLogArchive({
+      "assets/minecraft/models/block/cube_column.json": {
+        elements: [{ from: [0, 0, 0], to: [16, 16, 16], faces: { ...PILLAR_ELEMENT_FACES, up: { texture: "#end", rotation: 45 } } }],
+      },
+    });
+    expect(resolveAxisVariantCubeModel(archive, "oak_log", "upright")).toBeUndefined();
   });
 
   it("'sideways' is not identical to 'upright' (guards against the rotation silently being a no-op)", () => {

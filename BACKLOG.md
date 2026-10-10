@@ -321,12 +321,14 @@ one-line delete, and it should go out with 3.1 rather than sit there.
 
 ### 3.3 Verify orientation in-game, once (S — needs you, not me)
 
-Two things are still unverified in a real client, and neither would be noticed
-casually:
+Two things were unverified in a real client, and neither would be noticed
+casually. One is now settled:
 
-- **Horizontal mirroring** between opposite faces (east/west, north/south) —
-  documented as a known limitation. Both Minecraft wiki domains are DNS-blocked
-  from this sandbox, so it could not be settled here.
+- ~~**Horizontal mirroring** between opposite faces~~ — settled in v0.17.1. It
+  was reported in-game on a mangrove log (two of four sides looked different):
+  north, east and the bottom were mirrored. `faces.ts` now lays textures out with
+  Minecraft's default per-face UVs, and a test asserts no face is mirrored.
+  Rotated variants (sideways logs) now also turn their textures as the game does.
 - **The v0.10.0 Properties writing** for multi-variant blocks (glazed terracotta
   facing, furnaces) has never been placed in-game.
 
@@ -485,5 +487,5 @@ and after each change and compare the material list — distinct-block count is 
 headline number for Tier 1, and it should drop sharply.
 
 **In-game (only you can do this):** one build from an asymmetric source texture
-settles 3.3 — horizontal mirroring, the v0.10.0 Properties writing, and the
-vertical-flip fix — in a single session.
+settles what is left of 3.3 — the v0.10.0 Properties writing — and re-confirms
+the face orientation fixes, in a single session.

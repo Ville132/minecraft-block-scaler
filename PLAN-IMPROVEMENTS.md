@@ -155,6 +155,10 @@ up/down cap convention alone (no principled "right" orientation; document that).
 inverted. Add a new test with a horizontally-striped fixture — no existing fixture can see a
 u-flip, which is how 3b survived.
 
+*(3b shipped in v0.17.1, after an in-game report on a mangrove log — as a per-face table of
+Minecraft's default UVs in `faces.ts`, which also un-mirrors the bottom cap: leaving up/down
+alone was wrong, since one of two caps sharing a frame is always seen mirrored.)*
+
 **3c. Texture resolution is assumed to be 16.** `classifyScale` / `listScaleOptions` already
 take a `texturePixelsPerSide` parameter, but `ScaleAndOptionsStep.tsx:47,53,64` always use
 the default 16 while `faceSamplesAt` samples at the texture's *real* width. On a 32px resource

@@ -15,8 +15,14 @@ import {
   resolveAxisVariantCubeModel,
   resolveCanonicalVariantCubeModel,
   type AxisOrientation,
+  type ResolvedCubeModel,
 } from "../assets/modelResolver.ts";
-import { decodePngTexture, readPngWidth, type DecodedTexture } from "../assets/textureDecoder.ts";
+import {
+  decodePngTexture,
+  readPngWidth,
+  rotateTextureClockwise,
+  type DecodedTexture,
+} from "../assets/textureDecoder.ts";
 import { CUBE_FACE_DIRECTIONS, type CubeFaceDirection } from "../domain/faces.ts";
 import { consolidateVoxels } from "../domain/consolidate.ts";
 import { buildMaterialList, type MaterialListEntry } from "../domain/materials.ts";
@@ -98,6 +104,41 @@ export function pickInteriorFillBlock(palette: readonly PaletteBlock[]): Palette
   return best;
 }
 
+/** Every face's texture of one resolved model, or the first texture the archive turned out not to have. */
+type ModelFaceTextures =
+  | { readonly isComplete: true; readonly byDirection: Readonly<Record<CubeFaceDirection, DecodedTexture>> }
+  | { readonly isComplete: false; readonly missingTextureId: string };
+
+/**
+ * Decodes each face's texture of `model` and turns it the way the model
+ * shows it (see `ResolvedCubeModel.faceTextureTurns`) — the texture the
+ * face actually looks like in the world, laid out in that face's own frame,
+ * which is what both the build samples and the preview draws. A sideways
+ * log's bark would otherwise run up its long sides instead of along them.
+ *
+ * Each texture file is decoded once per `decodedByTextureId`, however many
+ * faces or blocks share it; only the turned copies are per face.
+ */
+async function decodeModelFaceTextures(
+  archive: MinecraftArchive,
+  model: ResolvedCubeModel,
+  decodedByTextureId: Map<string, DecodedTexture>,
+): Promise<ModelFaceTextures> {
+  const byDirection = {} as Record<CubeFaceDirection, DecodedTexture>;
+  for (const direction of CUBE_FACE_DIRECTIONS) {
+    const textureId = model.faceTextureIds[direction];
+    let decoded = decodedByTextureId.get(textureId);
+    if (decoded === undefined) {
+      const bytes = archive.getFile(texturePath(textureId));
+      if (bytes === undefined) return { isComplete: false, missingTextureId: textureId };
+      decoded = await decodePngTexture(bytes);
+      decodedByTextureId.set(textureId, decoded);
+    }
+    byDirection[direction] = rotateTextureClockwise(decoded, model.faceTextureTurns[direction]);
+  }
+  return { isComplete: true, byDirection };
+}
+
 /**
  * Every face's decoded texture for `blockId`, re-resolving its model
  * the same way `palette.ts` originally did (canonical variant first,
@@ -133,19 +174,8 @@ async function resolveRepresentativeFaceTextures(
     (hasAxisVariants(archive, blockId) ? resolveAxisVariantCubeModel(archive, blockId, "upright") : undefined);
   if (model === undefined) return undefined;
 
-  const textures = {} as Record<CubeFaceDirection, DecodedTexture>;
-  for (const direction of CUBE_FACE_DIRECTIONS) {
-    const textureId = model.faceTextureIds[direction];
-    let decoded = decodedByTextureId.get(textureId);
-    if (decoded === undefined) {
-      const bytes = archive.getFile(texturePath(textureId));
-      if (bytes === undefined) return undefined;
-      decoded = await decodePngTexture(bytes);
-      decodedByTextureId.set(textureId, decoded);
-    }
-    textures[direction] = decoded;
-  }
-  return textures;
+  const faceTextures = await decodeModelFaceTextures(archive, model, decodedByTextureId);
+  return faceTextures.isComplete ? faceTextures.byDirection : undefined;
 }
 
 /**
@@ -226,20 +256,13 @@ export async function buildReplica(params: BuildReplicaParams): Promise<BuildRep
   }
 
   const decodedByTextureId = new Map<string, DecodedTexture>();
-  const sourceFaceTextures = {} as Record<CubeFaceDirection, DecodedTexture>;
-  for (const direction of CUBE_FACE_DIRECTIONS) {
-    const textureId = model.faceTextureIds[direction];
-    let decoded = decodedByTextureId.get(textureId);
-    if (decoded === undefined) {
-      const bytes = archive.getFile(texturePath(textureId));
-      if (bytes === undefined) {
-        throw new Error(`texture '${textureId}' referenced by '${sourceBlockId}' is missing from the archive`);
-      }
-      decoded = await decodePngTexture(bytes);
-      decodedByTextureId.set(textureId, decoded);
-    }
-    sourceFaceTextures[direction] = decoded;
+  const sourceTextures = await decodeModelFaceTextures(archive, model, decodedByTextureId);
+  if (!sourceTextures.isComplete) {
+    throw new Error(
+      `texture '${sourceTextures.missingTextureId}' referenced by '${sourceBlockId}' is missing from the archive`,
+    );
   }
+  const sourceFaceTextures = sourceTextures.byDirection;
 
   const interiorFillBlock = fillStyle === "solid-cheap-core" ? pickInteriorFillBlock(palette) : undefined;
 

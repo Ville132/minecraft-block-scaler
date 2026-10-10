@@ -32,7 +32,9 @@ import {
   CUBE_FACE_DIRECTIONS,
   faceForOrientation,
   faceOrientation,
+  faceTextureFrame,
   type Axis,
+  type AxisDirection,
   type CubeFaceDirection,
 } from "./faces.ts";
 import type { PaletteBlock } from "./palette.ts";
@@ -143,57 +145,17 @@ export function governingFaces(
   return zTied ? [faceForOrientation("z", zBoundary.sign)] : [faceForOrientation("x", xBoundary.sign)];
 }
 
-interface FaceScreenAxes {
-  readonly uAxis: Axis;
-  readonly vAxis: Axis;
-  /** Whether the voxel's raw world coordinate along `vAxis` must be mirrored (`edgeBlocks - 1 - coord`) before use as a texture row — see this function's doc comment. `u` is never flipped: this app has not independently verified Minecraft's default per-face horizontal (U) handedness convention (east/west and north/south may legitimately be mirror images of each other; a modding reference that documents the vertical convention explicitly flags the horizontal one as genuinely hard to get right without a visual tool), so it is left as-is rather than "corrected" on an unverified guess. */
-  readonly vFlip: boolean;
-}
-
 /**
- * The screen-space (u, v) axes for a face, chosen so "up" in texture
- * space is always the block's real vertical (Y) axis on the four SIDE
- * faces — the semantically correct choice for any texture with a top
- * and bottom, like bark. The two CAP faces (up/down) have no natural
- * vertical of their own, so they keep a fixed, arbitrary-but-consistent
- * (x, z) convention, and no flip (there is no "upside down" for them).
- *
- * This replaced a generic "the two non-governing axes in x-y-z order"
- * rule that put z (depth) on the vertical axis of the east/west faces
- * instead of y — a real bug, reported against a real resource pack's
- * mangrove_log: it rendered the bark pattern rotated 90° on east/west
- * relative to north/south. Every test up to that point used a flat,
- * single-color texture, which can never reveal a rotation bug, since
- * rotating a solid color changes nothing.
- *
- * `vFlip` on the side faces fixes a second, separate bug: a decoded PNG
- * is row-major from the TOP-left (`textureDecoder.ts`), so texture row 0
- * is the texture's top, but world y=0 is the build's BOTTOM — using y
- * directly as the texture row therefore sampled the texture's top at the
- * build's bottom and vice versa, rendering every side face upside down.
- * Mirroring y before use corrects that. (Confirmed against the block
- * model format's own documented convention: "the v coordinate ... is
- * upside down, i.e. [0,0] is the top left corner" — this is independent
- * of, and not to be confused with, the unresolved horizontal question
- * above.)
+ * Converts between a world coordinate and a texture coordinate along one
+ * texture axis. It is its own inverse — reversing twice is the identity —
+ * which is what lets {@link positionOnFace} undo {@link faceLocalCoordinates}
+ * with the very same call, so the two can never disagree.
  */
-function faceScreenAxes(governingAxis: Axis): FaceScreenAxes {
-  switch (governingAxis) {
-    case "x":
-      return { uAxis: "z", vAxis: "y", vFlip: true }; // east/west: horizontal = around (z), vertical = true up (y), mirrored
-    case "z":
-      return { uAxis: "x", vAxis: "y", vFlip: true }; // north/south: horizontal = around (x), vertical = true up (y), mirrored
-    case "y":
-      return { uAxis: "x", vAxis: "z", vFlip: false }; // up/down: no natural vertical; fixed (x, z) convention, no flip
-  }
+function alongTextureAxis(coord: number, direction: AxisDirection, edgeBlocks: number): number {
+  return direction.sign === 1 ? coord : edgeBlocks - 1 - coord;
 }
 
-/** Mirrors a coordinate within `[0, edgeBlocks - 1]` — its own inverse, so the same call correctly undoes itself in {@link positionOnFace}. */
-function flipCoord(coord: number, edgeBlocks: number): number {
-  return edgeBlocks - 1 - coord;
-}
-
-/** The voxel's position along the face's screen-space (u, v) axes — see {@link faceScreenAxes}. */
+/** The voxel's position in the face's texture coordinates — see `faces.ts`'s {@link faceTextureFrame}. */
 function faceLocalCoordinates(
   direction: CubeFaceDirection,
   x: number,
@@ -201,11 +163,12 @@ function faceLocalCoordinates(
   z: number,
   edgeBlocks: number,
 ): { readonly uCoord: number; readonly vCoord: number } {
-  const { axis: governingAxis } = faceOrientation(direction);
   const coordByAxis: Readonly<Record<Axis, number>> = { x, y, z };
-  const { uAxis, vAxis, vFlip } = faceScreenAxes(governingAxis);
-  const rawV = coordByAxis[vAxis];
-  return { uCoord: coordByAxis[uAxis], vCoord: vFlip ? flipCoord(rawV, edgeBlocks) : rawV };
+  const { u, v } = faceTextureFrame(direction);
+  return {
+    uCoord: alongTextureAxis(coordByAxis[u.axis], u, edgeBlocks),
+    vCoord: alongTextureAxis(coordByAxis[v.axis], v, edgeBlocks),
+  };
 }
 
 /**
@@ -224,11 +187,11 @@ export function positionOnFace(
   edgeBlocks: number,
 ): { readonly x: number; readonly y: number; readonly z: number } {
   const { axis: governingAxis, sign } = faceOrientation(direction);
-  const { uAxis, vAxis, vFlip } = faceScreenAxes(governingAxis);
+  const { u, v } = faceTextureFrame(direction);
   const coordByAxis: Record<Axis, number> = { x: 0, y: 0, z: 0 };
   coordByAxis[governingAxis] = sign === -1 ? 0 : edgeBlocks - 1;
-  coordByAxis[uAxis] = uCoord;
-  coordByAxis[vAxis] = vFlip ? flipCoord(vCoord, edgeBlocks) : vCoord;
+  coordByAxis[u.axis] = alongTextureAxis(uCoord, u, edgeBlocks);
+  coordByAxis[v.axis] = alongTextureAxis(vCoord, v, edgeBlocks);
   return { x: coordByAxis.x, y: coordByAxis.y, z: coordByAxis.z };
 }
 

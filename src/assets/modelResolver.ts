@@ -37,7 +37,9 @@ import {
   type MinecraftArchive,
 } from "./archiveReader.ts";
 import {
+  combineTurns,
   CUBE_FACE_DIRECTIONS,
+  textureTurnOn,
   unrotateFaceDirection,
   type CubeFaceDirection,
   type NinetyDegreeRotation,
@@ -57,6 +59,19 @@ export interface ResolvedCubeModel {
    * `domain/biomeTint.ts` supplies it per block.
    */
   readonly tintedFaces: Readonly<Record<CubeFaceDirection, boolean>>;
+  /**
+   * How far clockwise each world face shows its texture turned, compared with
+   * how an unrotated cube lays a texture on that face (`domain/faces.ts`'s
+   * `faceTextureFrame`).
+   *
+   * Two things turn a texture, and this is their sum: the variant's `x`/`y`
+   * rotation carries the model's textures round with it (unless the variant
+   * sets `uvlock`, which exists to stop exactly that), and a model face can
+   * turn its own texture with `rotation`. A sideways log needs both — its
+   * bark is turned a quarter on two of its long sides, and vanilla's
+   * horizontal log model turns one end cap a half to stand it upright.
+   */
+  readonly faceTextureTurns: Readonly<Record<CubeFaceDirection, NinetyDegreeRotation>>;
 }
 
 const MAX_PARENT_CHAIN_DEPTH = 16;
@@ -67,6 +82,8 @@ interface ModelElementFace {
   readonly texture: string;
   /** Present when the game tints this face — see {@link ResolvedCubeModel.tintedFaces}. Its numeric value selects among a block's tints, and no full-cube block has more than one, so only its presence is kept. */
   readonly isTinted: boolean;
+  /** The face's own `rotation`: how far clockwise it turns its texture — see {@link ResolvedCubeModel.faceTextureTurns}. */
+  readonly turn: NinetyDegreeRotation;
 }
 interface ModelElement {
   readonly from: readonly [number, number, number];
@@ -169,9 +186,12 @@ function parseModelElement(elementRaw: unknown): ModelElement | undefined {
   if (isPlainObject(facesRaw)) {
     for (const direction of CUBE_FACE_DIRECTIONS) {
       const faceRaw = facesRaw[direction];
-      if (isPlainObject(faceRaw) && typeof faceRaw.texture === "string") {
-        faces[direction] = { texture: faceRaw.texture, isTinted: typeof faceRaw.tintindex === "number" };
-      }
+      if (!isPlainObject(faceRaw) || typeof faceRaw.texture !== "string") continue;
+      // A rotation the format does not allow leaves the face out, which makes
+      // the element no full cube: the same "not usable" as any malformed model.
+      const turn = parseRotationDegrees(faceRaw.rotation);
+      if (turn === undefined) continue;
+      faces[direction] = { texture: faceRaw.texture, isTinted: typeof faceRaw.tintindex === "number", turn };
     }
   }
   return { from, to, faces };
@@ -246,9 +266,11 @@ function vectorsEqual(a: readonly [number, number, number], b: readonly [number,
 
 interface VariantReference {
   readonly modelId: string;
-  /** Defaults to 0 when the variant JSON omits it — see {@link parseRotationDegrees}. */
+  /** Defaults to 0 when the variant JSON omits it, as does a model face's own `rotation` — see {@link parseRotationDegrees}. */
   readonly xDegrees: NinetyDegreeRotation;
   readonly yDegrees: NinetyDegreeRotation;
+  /** The variant's `uvlock`: textures keep the world's alignment instead of rotating with the model. */
+  readonly isUvLocked: boolean;
 }
 
 function parseRotationDegrees(value: unknown): NinetyDegreeRotation | undefined {
@@ -256,14 +278,14 @@ function parseRotationDegrees(value: unknown): NinetyDegreeRotation | undefined 
   return value === 0 || value === 90 || value === 180 || value === 270 ? value : undefined;
 }
 
-/** Extracts a variant's model id and rotation. A random-variation array picks its first option — rotation-only differences between options don't affect which texture gets resolved for a given world face anyway. */
+/** Extracts a variant's model id and rotation. A random-variation array picks its first option: the others only re-turn or mirror the same textures at random from one block position to the next, which no single replica face can follow. */
 function extractVariantReference(variant: unknown): VariantReference | undefined {
   const entry = Array.isArray(variant) ? variant[0] : variant;
   if (!isPlainObject(entry) || typeof entry.model !== "string") return undefined;
   const xDegrees = parseRotationDegrees(entry.x);
   const yDegrees = parseRotationDegrees(entry.y);
   if (xDegrees === undefined || yDegrees === undefined) return undefined;
-  return { modelId: entry.model, xDegrees, yDegrees };
+  return { modelId: entry.model, xDegrees, yDegrees, isUvLocked: entry.uvlock === true };
 }
 
 const variantsCacheByArchive = new WeakMap<MinecraftArchive, Map<string, Record<string, unknown> | undefined>>();
@@ -292,7 +314,8 @@ function readVariantsMap(archive: MinecraftArchive, blockId: string): Record<str
  * full-cube element, and resolves each WORLD face's texture by first
  * un-rotating it back to the LOCAL face the model itself defines (a
  * no-op when the reference carries no rotation, as for every
- * single-variant block before axis-pillar support existed).
+ * single-variant block before axis-pillar support existed), along with
+ * how far the rotation turned that face's texture.
  */
 function resolveCubeModelFromReference(
   archive: MinecraftArchive,
@@ -322,6 +345,7 @@ function resolveCubeModelFromReference(
 
   const faceTextureIds: Partial<Record<CubeFaceDirection, string>> = {};
   const tintedFaces: Partial<Record<CubeFaceDirection, boolean>> = {};
+  const faceTextureTurns: Partial<Record<CubeFaceDirection, NinetyDegreeRotation>> = {};
   for (const worldDirection of CUBE_FACE_DIRECTIONS) {
     const localDirection = unrotateFaceDirection(worldDirection, reference.xDegrees, reference.yDegrees);
     const face = element.faces[localDirection];
@@ -330,11 +354,16 @@ function resolveCubeModelFromReference(
     if (resolved === undefined) return undefined;
     faceTextureIds[worldDirection] = resolved;
     tintedFaces[worldDirection] = face.isTinted;
+    const turnFromRotation = reference.isUvLocked
+      ? 0
+      : textureTurnOn(worldDirection, reference.xDegrees, reference.yDegrees);
+    faceTextureTurns[worldDirection] = combineTurns(turnFromRotation, face.turn);
   }
 
   return {
     faceTextureIds: faceTextureIds as Record<CubeFaceDirection, string>,
     tintedFaces: tintedFaces as Record<CubeFaceDirection, boolean>,
+    faceTextureTurns: faceTextureTurns as Record<CubeFaceDirection, NinetyDegreeRotation>,
   };
 }
 

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { readPngWidth } from "./textureDecoder.ts";
+import { readPngWidth, rotateTextureClockwise, type DecodedTexture } from "./textureDecoder.ts";
 
 /**
  * The smallest byte sequence `readPngWidth` needs: the 8-byte PNG
@@ -52,5 +52,77 @@ describe("readPngWidth", () => {
     const bytes = minimalPngHeader(16, 16);
     bytes.set([0x49, 0x44, 0x41, 0x54], 12); // "IDAT" instead of "IHDR"
     expect(() => readPngWidth(bytes)).toThrow(/IHDR/);
+  });
+});
+
+/** A texture whose pixels are labelled by their red channel, row by row from the top — so a test can write and read one as a grid of labels. */
+function labelledTexture(rows: readonly (readonly number[])[]): DecodedTexture {
+  const width = rows[0]!.length;
+  const pixels = new Uint8ClampedArray(width * rows.length * 4);
+  rows.flat().forEach((label, index) => pixels.set([label, 0, 0, 255], index * 4));
+  return { width, height: rows.length, pixels };
+}
+
+function labelsOf(texture: DecodedTexture): number[][] {
+  return Array.from({ length: texture.height }, (_, row) =>
+    Array.from({ length: texture.width }, (_, column) => texture.pixels[(row * texture.width + column) * 4]!),
+  );
+}
+
+describe("rotateTextureClockwise", () => {
+  const square = labelledTexture([
+    [1, 2],
+    [3, 4],
+  ]);
+
+  it("turns a quarter clockwise: the top row becomes the right-hand column", () => {
+    expect(labelsOf(rotateTextureClockwise(square, 90))).toEqual([
+      [3, 1],
+      [4, 2],
+    ]);
+  });
+
+  it("turns half way round", () => {
+    expect(labelsOf(rotateTextureClockwise(square, 180))).toEqual([
+      [4, 3],
+      [2, 1],
+    ]);
+  });
+
+  it("turns three quarters clockwise: the top row becomes the left-hand column", () => {
+    expect(labelsOf(rotateTextureClockwise(square, 270))).toEqual([
+      [2, 4],
+      [1, 3],
+    ]);
+  });
+
+  it("returns the very same texture for no turn", () => {
+    expect(rotateTextureClockwise(square, 0)).toBe(square);
+  });
+
+  it("swaps width and height of a non-square texture on a quarter turn", () => {
+    const wide = labelledTexture([
+      [1, 2, 3],
+      [4, 5, 6],
+    ]);
+    const turned = rotateTextureClockwise(wide, 90);
+    expect([turned.width, turned.height]).toEqual([2, 3]);
+    expect(labelsOf(turned)).toEqual([
+      [4, 1],
+      [5, 2],
+      [6, 3],
+    ]);
+  });
+
+  it("comes back to the original after four quarter turns", () => {
+    let texture = labelledTexture([
+      [1, 2, 3],
+      [4, 5, 6],
+    ]);
+    for (let turn = 0; turn < 4; turn++) texture = rotateTextureClockwise(texture, 90);
+    expect(labelsOf(texture)).toEqual([
+      [1, 2, 3],
+      [4, 5, 6],
+    ]);
   });
 });

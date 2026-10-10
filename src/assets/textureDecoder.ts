@@ -13,8 +13,11 @@
  * thing which could be wrong is the browser's own decoder.
  *
  * `readPngWidth` has the opposite shape — plain byte parsing, no browser
- * API involved — so it IS covered, in `textureDecoder.test.ts`.
+ * API involved — so it IS covered, in `textureDecoder.test.ts`, as is
+ * `rotateTextureClockwise`, which only rearranges pixels already decoded.
  */
+
+import type { NinetyDegreeRotation } from "../domain/faces.ts";
 
 export interface DecodedTexture {
   readonly width: number;
@@ -22,6 +25,8 @@ export interface DecodedTexture {
   /** RGBA, 4 bytes per pixel, row-major from the top-left — `pixels.length === width * height * 4`. */
   readonly pixels: Uint8ClampedArray;
 }
+
+const BYTES_PER_PIXEL = 4;
 
 const PNG_SIGNATURE = [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a];
 /** Byte offset of the big-endian width field within a PNG's first (always IHDR) chunk: 8-byte signature + 4-byte chunk length + 4-byte chunk type. */
@@ -84,4 +89,51 @@ export async function decodePngTexture(pngBytes: Uint8Array): Promise<DecodedTex
   } finally {
     bitmap.close();
   }
+}
+
+/** Which pixel of the original lands at (`column`, `row`) of the texture turned `degrees` clockwise. */
+function sourcePixelOf(
+  column: number,
+  row: number,
+  degrees: Exclude<NinetyDegreeRotation, 0>,
+  { width, height }: DecodedTexture,
+): { readonly sourceColumn: number; readonly sourceRow: number } {
+  switch (degrees) {
+    case 90:
+      return { sourceColumn: row, sourceRow: height - 1 - column };
+    case 180:
+      return { sourceColumn: width - 1 - column, sourceRow: height - 1 - row };
+    case 270:
+      return { sourceColumn: width - 1 - row, sourceRow: column };
+  }
+}
+
+/**
+ * `texture` turned `degrees` clockwise — how a face shows a texture its
+ * block model turned (see `domain/faces.ts`'s `textureTurnOn`).
+ *
+ * Inputs: a decoded texture and a clockwise turn.
+ * Output: the turned texture; a quarter turn swaps width and height. A 0°
+ * turn returns `texture` itself rather than a copy — safe because nothing
+ * writes to a decoded texture's pixels, and it keeps one shared texture
+ * shared when most faces of most blocks are not turned at all.
+ * Failure modes: none.
+ */
+export function rotateTextureClockwise(texture: DecodedTexture, degrees: NinetyDegreeRotation): DecodedTexture {
+  if (degrees === 0) return texture;
+  const isQuarterTurn = degrees !== 180;
+  const turnedWidth = isQuarterTurn ? texture.height : texture.width;
+  const turnedHeight = isQuarterTurn ? texture.width : texture.height;
+  const turnedPixels = new Uint8ClampedArray(texture.pixels.length);
+  for (let row = 0; row < turnedHeight; row++) {
+    for (let column = 0; column < turnedWidth; column++) {
+      const { sourceColumn, sourceRow } = sourcePixelOf(column, row, degrees, texture);
+      const sourceStart = (sourceRow * texture.width + sourceColumn) * BYTES_PER_PIXEL;
+      turnedPixels.set(
+        texture.pixels.subarray(sourceStart, sourceStart + BYTES_PER_PIXEL),
+        (row * turnedWidth + column) * BYTES_PER_PIXEL,
+      );
+    }
+  }
+  return { width: turnedWidth, height: turnedHeight, pixels: turnedPixels };
 }
