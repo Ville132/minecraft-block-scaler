@@ -70,6 +70,7 @@ describe("resolveCanonicalVariantCubeModel — single-variant happy path", () =>
         east: "block/cobblestone",
         west: "block/cobblestone",
       },
+      tintedFaces: { down: false, up: false, north: false, south: false, east: false, west: false },
     });
     expect(result?.properties).toEqual({});
   });
@@ -378,6 +379,7 @@ describe("resolveAxisVariantCubeModel", () => {
         east: "block/oak_log",
         west: "block/oak_log",
       },
+      tintedFaces: { down: false, up: false, north: false, south: false, east: false, west: false },
     });
   });
 
@@ -392,6 +394,7 @@ describe("resolveAxisVariantCubeModel", () => {
         east: "block/oak_log",
         west: "block/oak_log",
       },
+      tintedFaces: { down: false, up: false, north: false, south: false, east: false, west: false },
     });
   });
 

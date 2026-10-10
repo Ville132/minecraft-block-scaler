@@ -1,7 +1,7 @@
 import { gunzipSync } from "fflate";
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
-import type { PaletteBlock } from "../domain/palette.ts";
+import { uniformAppearanceByFace, type PaletteBlock } from "../domain/palette.ts";
 import type { Voxel } from "../domain/shell.ts";
 import { bitsPerEntry, fromSignedLongArray, unpackBlockStateIndices } from "./bitArray.ts";
 import {
@@ -17,7 +17,8 @@ import {
 import { schematicFileName, writeSchematicBytes } from "./writeSchematic.ts";
 
 function fakeBlock(blockId: string): PaletteBlock {
-  return { blockId, resourceLocation: `minecraft:${blockId}`, color: { L: 0.5, a: 0, b: 0 }, textureVariance: 0, costTier: "common", acquisitionCost: 0 };
+  const color = { L: 0.5, a: 0, b: 0 };
+  return { blockId, resourceLocation: `minecraft:${blockId}`, color, textureVariance: 0, appearanceByFace: uniformAppearanceByFace(color, 0), costTier: "common", acquisitionCost: 0 };
 }
 
 function fakeBlockWithProperties(blockId: string, properties: Readonly<Record<string, string>>): PaletteBlock {

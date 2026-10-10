@@ -1,5 +1,6 @@
 import { useMemo, useState } from "react";
 import type { AxisOrientation } from "../assets/modelResolver.ts";
+import { matchesSearch, searchTermsFor } from "../domain/blockSearch.ts";
 import type { PaletteBlock, PaletteOptions } from "../domain/palette.ts";
 import { swatchColor } from "./swatchColor.ts";
 
@@ -56,10 +57,18 @@ export function BlockPickerStep({
     [palette, axisVariantBlocks],
   );
 
+  // Derived once per block list rather than per keystroke: the term sets
+  // depend only on the ids, and this runs over every block on every
+  // character typed.
+  const searchTermsByBlockId = useMemo(
+    () => new Map(allBlocks.map((block) => [block.blockId, searchTermsFor(block.blockId)])),
+    [allBlocks],
+  );
+
   const visibleBlocks = useMemo(() => {
-    const query = search.trim().toLowerCase();
-    return query === "" ? allBlocks : allBlocks.filter((block) => block.blockId.includes(query));
-  }, [allBlocks, search]);
+    if (search.trim() === "") return allBlocks;
+    return allBlocks.filter((block) => matchesSearch(searchTermsByBlockId.get(block.blockId)!, search));
+  }, [allBlocks, searchTermsByBlockId, search]);
 
   const selectedIsAxisVariant = axisVariantBlocks.some((block) => block.blockId === selectedBlockId);
 
@@ -76,7 +85,7 @@ export function BlockPickerStep({
         <>
           <input
             type="text"
-            placeholder="Search blocks…"
+            placeholder="Search blocks… (try &quot;warped log&quot;)"
             value={search}
             onChange={(event) => setSearch(event.target.value)}
             className="block-search"
@@ -173,7 +182,7 @@ export function BlockPickerStep({
                   onOptionsChange({ ...options, allowBiomeTintedBlocks: event.target.checked })
                 }
               />
-              Allow biome-tinted blocks (grass, leaves)
+              Allow biome-tinted blocks (grass, leaves — coloured for a temperate biome)
             </label>
             <label className="checkbox">
               <input

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { rgb8ToOklab } from "./color.ts";
-import type { PaletteBlock } from "./palette.ts";
+import { uniformAppearanceByFace, type PaletteBlock } from "./palette.ts";
 import type { Voxel } from "./shell.ts";
 import {
   breakdownQuantity,
@@ -40,6 +40,7 @@ function fakePaletteBlock(blockId: string, properties?: Readonly<Record<string, 
     resourceLocation: `minecraft:${blockId}`,
     color: rgb8ToOklab({ r: 100, g: 100, b: 100 }),
     textureVariance: 0,
+    appearanceByFace: uniformAppearanceByFace(rgb8ToOklab({ r: 100, g: 100, b: 100 }), 0),
     costTier: "common",
     acquisitionCost: 0,
     ...(properties !== undefined && { properties }),

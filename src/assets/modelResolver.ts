@@ -46,6 +46,17 @@ import {
 export interface ResolvedCubeModel {
   /** One resolved, namespace-stripped texture id (e.g. `"block/cobblestone"`) per face. */
   readonly faceTextureIds: Readonly<Record<CubeFaceDirection, string>>;
+  /**
+   * The faces the game multiplies a biome colour into before drawing them.
+   *
+   * Minecraft stores grass and leaves as GREYSCALE textures and tints them
+   * at render time, so a face listed here does not look remotely like the
+   * pixels in the file — about 0.19 Oklab away, ten times the colour
+   * tolerance. A model marks such a face with `tintindex`; which colour gets
+   * multiplied in is the renderer's business, not the model's, so
+   * `domain/biomeTint.ts` supplies it per block.
+   */
+  readonly tintedFaces: Readonly<Record<CubeFaceDirection, boolean>>;
 }
 
 const MAX_PARENT_CHAIN_DEPTH = 16;
@@ -54,6 +65,8 @@ const FULL_CUBE_TO = [16, 16, 16] as const;
 
 interface ModelElementFace {
   readonly texture: string;
+  /** Present when the game tints this face — see {@link ResolvedCubeModel.tintedFaces}. Its numeric value selects among a block's tints, and no full-cube block has more than one, so only its presence is kept. */
+  readonly isTinted: boolean;
 }
 interface ModelElement {
   readonly from: readonly [number, number, number];
@@ -157,7 +170,7 @@ function parseModelElement(elementRaw: unknown): ModelElement | undefined {
     for (const direction of CUBE_FACE_DIRECTIONS) {
       const faceRaw = facesRaw[direction];
       if (isPlainObject(faceRaw) && typeof faceRaw.texture === "string") {
-        faces[direction] = { texture: faceRaw.texture };
+        faces[direction] = { texture: faceRaw.texture, isTinted: typeof faceRaw.tintindex === "number" };
       }
     }
   }
@@ -308,16 +321,21 @@ function resolveCubeModelFromReference(
   if (element === undefined || !isFullCubeElement(element)) return undefined;
 
   const faceTextureIds: Partial<Record<CubeFaceDirection, string>> = {};
+  const tintedFaces: Partial<Record<CubeFaceDirection, boolean>> = {};
   for (const worldDirection of CUBE_FACE_DIRECTIONS) {
     const localDirection = unrotateFaceDirection(worldDirection, reference.xDegrees, reference.yDegrees);
-    const textureVariable = element.faces[localDirection]?.texture;
-    if (textureVariable === undefined || !textureVariable.startsWith("#")) return undefined;
-    const resolved = resolveTextureVariable(mergedTextures, textureVariable.slice(1));
+    const face = element.faces[localDirection];
+    if (face === undefined || !face.texture.startsWith("#")) return undefined;
+    const resolved = resolveTextureVariable(mergedTextures, face.texture.slice(1));
     if (resolved === undefined) return undefined;
     faceTextureIds[worldDirection] = resolved;
+    tintedFaces[worldDirection] = face.isTinted;
   }
 
-  return { faceTextureIds: faceTextureIds as Record<CubeFaceDirection, string> };
+  return {
+    faceTextureIds: faceTextureIds as Record<CubeFaceDirection, string>,
+    tintedFaces: tintedFaces as Record<CubeFaceDirection, boolean>,
+  };
 }
 
 export interface CanonicalVariant {

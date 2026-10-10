@@ -237,13 +237,31 @@ describe("buildPalette", () => {
     expect(cobblestone?.color).toEqual(rgb8ToOklab({ r: 136, g: 136, b: 136 }));
   });
 
-  it("excludes precious, gravity, biome-tinted, and unbuildable blocks by default", async () => {
+  it("excludes precious, gravity, and unbuildable blocks by default", async () => {
     const palette = await buildPalette(testArchive(), undefined, fakeDecodeTexture);
     const blockIds = palette.map((block) => block.blockId);
     expect(blockIds).not.toContain("gold_block");
     expect(blockIds).not.toContain("sand");
-    expect(blockIds).not.toContain("grass_block");
     expect(blockIds).not.toContain("barrier");
+  });
+
+  it("now INCLUDES biome-tinted blocks by default, since their real colour is applied rather than guessed", async () => {
+    // This assertion used to be the opposite. Grass and leaves were excluded
+    // because the jar stores them greyscale and the app had no tint to
+    // apply, which read as "unsupported" but really meant "wrong colour" —
+    // and it cost the palette its best greens. `domain/biomeTint.ts` now
+    // supplies the tint, so there is nothing left to protect the user from.
+    const palette = await buildPalette(testArchive(), undefined, fakeDecodeTexture);
+    expect(palette.map((block) => block.blockId)).toContain("grass_block");
+  });
+
+  it("excludes biome-tinted blocks when allowBiomeTintedBlocks is turned off, for a build in a differently-tinted biome", async () => {
+    const palette = await buildPalette(
+      testArchive(),
+      { survivalFriendlyOnly: true, allowGravityBlocks: false, allowBiomeTintedBlocks: false },
+      fakeDecodeTexture,
+    );
+    expect(palette.map((block) => block.blockId)).not.toContain("grass_block");
   });
 
   it("excludes a block with an animated texture", async () => {
@@ -292,15 +310,6 @@ describe("buildPalette", () => {
       fakeDecodeTexture,
     );
     expect(palette.map((block) => block.blockId)).toContain("sand");
-  });
-
-  it("re-includes a biome-tinted block when allowBiomeTintedBlocks is set", async () => {
-    const palette = await buildPalette(
-      testArchive(),
-      { survivalFriendlyOnly: true, allowGravityBlocks: false, allowBiomeTintedBlocks: true },
-      fakeDecodeTexture,
-    );
-    expect(palette.map((block) => block.blockId)).toContain("grass_block");
   });
 
   it("never re-includes an unconditionally unbuildable block, regardless of toggles", async () => {

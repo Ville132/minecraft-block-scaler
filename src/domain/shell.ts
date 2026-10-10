@@ -11,13 +11,11 @@
 
 import type { DecodedTexture } from "../assets/textureDecoder.ts";
 import {
-  averageLinearRgb,
   averageOklab,
   createMatcher,
   DEFAULT_COLOR_TOLERANCE,
   linearRgbToOklab,
   rgb8ToLinearRgb,
-  type LinearRgb,
   type MatchOptions,
   type Oklab,
   type ScoredCandidate,
@@ -338,22 +336,39 @@ export function assessReplicaContrastHeadroom(
   return assessContrastHeadroom(spans);
 }
 
-/** The linear-light average color across a rectangular pixel region of a decoded texture. Alpha is ignored: unlike `palette.ts`'s candidates, the source block's texture is trusted to be opaque by construction (see this module's header comment). */
-function averageColorInRegion(texture: DecodedTexture, uRegion: PixelRegion, vRegion: PixelRegion): LinearRgb {
-  const samples: LinearRgb[] = [];
+/**
+ * The average color across a rectangular pixel region of a decoded texture,
+ * as the Oklab centroid of those pixels.
+ *
+ * Averaged IN Oklab rather than in linear light and converted once, because
+ * Oklab's cube-root nonlinearity makes those two different points — the same
+ * reasoning `palette.ts`'s `representativeAppearance` sets out for candidate
+ * colors. This is the other half of that: it produces every voxel's TARGET
+ * color, so until both sides averaged the same way the two were being
+ * compared across a systematic gap. A no-op when one pixel fills the region
+ * (every exact up-scale), real on any down-scale, where many pixels collapse
+ * into one voxel.
+ *
+ * Alpha is ignored: unlike `palette.ts`'s candidates, the source block's
+ * texture is trusted to be opaque by construction (see this module's header).
+ */
+function averageColorInRegion(texture: DecodedTexture, uRegion: PixelRegion, vRegion: PixelRegion): Oklab {
+  const samples: Oklab[] = [];
   for (let v = vRegion.start; v < vRegion.endExclusive; v++) {
     for (let u = uRegion.start; u < uRegion.endExclusive; u++) {
       const pixelIndex = (v * texture.width + u) * 4;
       samples.push(
-        rgb8ToLinearRgb({
-          r: texture.pixels[pixelIndex]!,
-          g: texture.pixels[pixelIndex + 1]!,
-          b: texture.pixels[pixelIndex + 2]!,
-        }),
+        linearRgbToOklab(
+          rgb8ToLinearRgb({
+            r: texture.pixels[pixelIndex]!,
+            g: texture.pixels[pixelIndex + 1]!,
+            b: texture.pixels[pixelIndex + 2]!,
+          }),
+        ),
       );
     }
   }
-  return averageLinearRgb(samples);
+  return averageOklab(samples);
 }
 
 interface FaceSample {
@@ -400,6 +415,40 @@ function distinctPixelRegions(edgeBlocks: number, textureSize: number): PixelReg
     if (previous === undefined || previous.start !== region.start) regions.push(region);
   }
   return regions;
+}
+
+/**
+ * Scores every palette block by what it would actually SHOW on `directions`
+ * — the faces this voxel turns outward.
+ *
+ * This is the difference between matching a log and matching the idea of a
+ * log. A block's single blended colour is a colour that appears on none of
+ * its faces: oak_log's sits 0.138 Oklab from both its bark and its end
+ * grain, seven times the entire matching tolerance. On the replica's top
+ * face what you see is the end grain, on a side you see bark, and those are
+ * the colours worth comparing against.
+ *
+ * `variance` comes per face too, which matters as much as the colour: scored
+ * against the block's blend, a log's perfectly flat bark looked wildly busy
+ * and lost the matcher's flatness tie-break to any single-texture block.
+ *
+ * An edge voxel shows two faces at once and gets the average of the two,
+ * matched against the equally blended target — the same convention the
+ * caller uses on the source side.
+ */
+export function candidatesFacing(
+  palette: readonly PaletteBlock[],
+  directions: readonly CubeFaceDirection[],
+): ScoredCandidate<PaletteBlock>[] {
+  return palette.map((block) => {
+    const faces = directions.map((direction) => block.appearanceByFace[direction]);
+    return {
+      color: faces.length === 1 ? faces[0]!.color : averageOklab(faces.map((face) => face.color)),
+      variance: faces.reduce((sum, face) => sum + face.variance, 0) / faces.length,
+      acquisitionCost: block.acquisitionCost,
+      item: block,
+    };
+  });
 }
 
 /** One face's contrast enhancement: its own mean lightness (what to amplify around) and the gain. */
@@ -452,7 +501,7 @@ function buildDitheredFaceGrid(
   const trueColors: Oklab[] = [];
   for (const vRegion of vRegions) {
     for (const uRegion of uRegions) {
-      trueColors.push(linearRgbToOklab(averageColorInRegion(texture, uRegion, vRegion)));
+      trueColors.push(averageColorInRegion(texture, uRegion, vRegion));
     }
   }
   const targets =
@@ -531,17 +580,21 @@ export function buildVoxelGrid(params: BuildVoxelGridParams): Voxel[] {
     }
   }
 
-  const paletteCandidates: ScoredCandidate<PaletteBlock>[] = palette.map((block) => ({
-    color: block.color,
-    variance: block.textureVariance,
-    acquisitionCost: block.acquisitionCost,
-    item: block,
-  }));
   const matchOptions: MatchOptions = { colorTolerance };
-  // Bound once and reused for every undithered decision — the matcher
-  // owns a scratch buffer, so creating one per call would reallocate it
-  // for every distinct texture cell of every face.
-  const matchColor = createMatcher(paletteCandidates, matchOptions);
+  // One candidate pool per set of faces a voxel can present, bound once each
+  // — the matcher owns a scratch buffer, so building one per voxel would
+  // reallocate it millions of times. There are at most ten distinct keys per
+  // build: six single faces, plus the four z/x edge pairs (`governingFaces`
+  // lets the cap win every tie that involves y, so no y pair ever occurs).
+  const matcherByFaceKey = new Map<string, (target: Oklab) => ScoredCandidate<PaletteBlock>>();
+  const matcherFacing = (directions: readonly CubeFaceDirection[]) => {
+    const key = directions.join("+");
+    const existing = matcherByFaceKey.get(key);
+    if (existing !== undefined) return existing;
+    const matcher = createMatcher(candidatesFacing(palette, directions), matchOptions);
+    matcherByFaceKey.set(key, matcher);
+    return matcher;
+  };
 
   // Per face, not one mean shared across the block: each face is
   // amplified around ITS OWN average, so a face with no pattern of its
@@ -572,7 +625,9 @@ export function buildVoxelGrid(params: BuildVoxelGridParams): Voxel[] {
             buildDitheredFaceGrid(
               sourceFaceTextures[direction],
               edgeBlocks,
-              paletteCandidates,
+              // This grid covers one face, so its candidates are scored by
+              // what they show on that face.
+              candidatesFacing(palette, [direction]),
               matchOptions,
               faceContrast(direction),
             ),
@@ -632,12 +687,12 @@ export function buildVoxelGrid(params: BuildVoxelGridParams): Voxel[] {
             // palette.ts's Jensen-gap fix established for averaging a
             // single texture's pixels.
             const targetColors = samples.map((sample, i) => {
-              const rawColor = linearRgbToOklab(averageColorInRegion(sample.texture, sample.uRegion, sample.vRegion));
+              const rawColor = averageColorInRegion(sample.texture, sample.uRegion, sample.vRegion);
               const meanLightness = faceMeanLightness?.get(directions[i]!);
               return meanLightness === undefined ? rawColor : amplifyLightness(rawColor, meanLightness, contrastGain);
             });
             const color = targetColors.length === 1 ? targetColors[0]! : averageOklab(targetColors);
-            paletteBlock = matchColor(color).item;
+            paletteBlock = matcherFacing(directions)(color).item;
             resolvedColorCache.set(cacheKey, paletteBlock);
           }
         }

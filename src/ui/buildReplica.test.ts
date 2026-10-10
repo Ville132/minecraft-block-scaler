@@ -6,7 +6,7 @@
  */
 import { describe, expect, it } from "vitest";
 import { rgb8ToOklab } from "../domain/color.ts";
-import type { PaletteBlock } from "../domain/palette.ts";
+import { uniformAppearanceByFace, type PaletteBlock } from "../domain/palette.ts";
 import { pickInteriorFillBlock } from "./buildReplica.ts";
 
 function fakeBlock(
@@ -19,6 +19,7 @@ function fakeBlock(
     resourceLocation: `minecraft:${blockId}`,
     color: rgb8ToOklab({ r: 128, g: 128, b: 128 }),
     textureVariance,
+    appearanceByFace: uniformAppearanceByFace(rgb8ToOklab({ r: 128, g: 128, b: 128 }), textureVariance),
     costTier: "common",
     acquisitionCost,
   };

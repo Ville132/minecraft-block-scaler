@@ -1,12 +1,21 @@
 import { describe, expect, it } from "vitest";
 import type { DecodedTexture } from "../assets/textureDecoder.ts";
-import { averageLinearRgb, linearRgbToOklab, rgb8ToLinearRgb, rgb8ToOklab } from "./color.ts";
+import {
+  averageLinearRgb,
+  averageOklab,
+  linearRgbToOklab,
+  oklabDistance,
+  rgb8ToLinearRgb,
+  rgb8ToOklab,
+  type Oklab,
+} from "./color.ts";
 import { CUBE_FACE_DIRECTIONS, type CubeFaceDirection } from "./faces.ts";
-import type { PaletteBlock } from "./palette.ts";
+import { uniformAppearanceByFace, type PaletteBlock } from "./palette.ts";
 import { hollowBlockCount, solidBlockCount } from "./scale.ts";
 import {
   assessReplicaContrastHeadroom,
   buildVoxelGrid,
+  candidatesFacing,
   governingFaces,
   isShellVoxel,
   pixelRegionForVoxelCoord,
@@ -180,6 +189,7 @@ function paletteBlock(
     resourceLocation: `minecraft:${blockId}`,
     color: rgb8ToOklab({ r: rgb[0], g: rgb[1], b: rgb[2] }),
     textureVariance,
+    appearanceByFace: uniformAppearanceByFace(rgb8ToOklab({ r: rgb[0], g: rgb[1], b: rgb[2] }), textureVariance),
     costTier: "common",
     acquisitionCost: 0,
   };
@@ -241,6 +251,7 @@ describe("buildVoxelGrid", () => {
       resourceLocation: "minecraft:noisy_red_wool",
       color: rgb8ToOklab({ r: RED[0], g: RED[1], b: RED[2] }), // perfect color match
       textureVariance: 0.05, // but a visually busy texture
+      appearanceByFace: uniformAppearanceByFace(rgb8ToOklab({ r: RED[0], g: RED[1], b: RED[2] }), 0.05),
       costTier: "common",
       acquisitionCost: 0,
     };
@@ -253,6 +264,7 @@ describe("buildVoxelGrid", () => {
       // now correctly refuses to trade for a flatter texture.)
       color: rgb8ToOklab({ r: 250, g: 8, b: 8 }),
       textureVariance: 0,
+      appearanceByFace: uniformAppearanceByFace(rgb8ToOklab({ r: 250, g: 8, b: 8 }), 0),
       costTier: "common",
       acquisitionCost: 0,
     };
@@ -327,19 +339,34 @@ describe("buildVoxelGrid", () => {
     sourceFaceTextures.north = solidTexture(16, RED);
     sourceFaceTextures.west = solidTexture(16, BLUE);
 
-    const blendedLinear = averageLinearRgb([
-      rgb8ToLinearRgb({ r: RED[0], g: RED[1], b: RED[2] }),
-      rgb8ToLinearRgb({ r: BLUE[0], g: BLUE[1], b: BLUE[2] }),
-    ]);
-    const blendBlock: PaletteBlock = {
-      blockId: "blend_wool",
-      resourceLocation: "minecraft:blend_wool",
-      color: linearRgbToOklab(blendedLinear),
+    // Two candidates sitting at the two different "averages" of red and
+    // blue. Oklab's nonlinearity puts them in different places, so whichever
+    // one wins reveals which space the production blend actually uses — and
+    // the answer must be Oklab, to match the space candidate colours live in.
+    const redOklab = rgb8ToOklab({ r: RED[0], g: RED[1], b: RED[2] });
+    const blueOklab = rgb8ToOklab({ r: BLUE[0], g: BLUE[1], b: BLUE[2] });
+    const oklabBlend = averageOklab([redOklab, blueOklab]);
+    const linearBlend = linearRgbToOklab(
+      averageLinearRgb([
+        rgb8ToLinearRgb({ r: RED[0], g: RED[1], b: RED[2] }),
+        rgb8ToLinearRgb({ r: BLUE[0], g: BLUE[1], b: BLUE[2] }),
+      ]),
+    );
+    expect(oklabDistance(oklabBlend, linearBlend), "the two averages must differ for this test to mean anything").
+      toBeGreaterThan(0.01);
+
+    const named = (blockId: string, color: Oklab): PaletteBlock => ({
+      blockId,
+      resourceLocation: `minecraft:${blockId}`,
+      color,
       textureVariance: 0,
+      appearanceByFace: uniformAppearanceByFace(color, 0),
       costTier: "common",
       acquisitionCost: 0,
-    };
-    const palette = [...PALETTE, blendBlock];
+    });
+    // Listed with the linear one FIRST, so it would win any tie — it loses
+    // on distance alone.
+    const palette = [...PALETTE, named("linear_blend_wool", linearBlend), named("blend_wool", oklabBlend)];
 
     const voxels = buildVoxelGrid({ edgeBlocks: 16, fillStyle: "hollow", sourceFaceTextures, palette });
     const voxelAt = new Map(voxels.map((voxel) => [`${voxel.x},${voxel.y},${voxel.z}`, voxel]));
@@ -492,6 +519,7 @@ describe("buildVoxelGrid", () => {
         resourceLocation: "minecraft:blend_wool",
         color: linearRgbToOklab(blendedLinear),
         textureVariance: 0,
+        appearanceByFace: uniformAppearanceByFace(linearRgbToOklab(blendedLinear), 0),
         costTier: "common",
         acquisitionCost: 0,
       };
@@ -639,6 +667,98 @@ function narrowSaturatedSource(
 function distinctBlockIds(voxels: readonly { readonly paletteBlock: PaletteBlock }[]): string[] {
   return [...new Set(voxels.map((voxel) => voxel.paletteBlock.blockId))].sort();
 }
+
+/** A log-shaped candidate: one colour on the caps, a different one on the four sides — the shape `uniformAppearanceByFace` deliberately cannot express. */
+function pillarBlock(
+  blockId: string,
+  sideRgb: readonly [number, number, number],
+  capRgb: readonly [number, number, number],
+): PaletteBlock {
+  const side = { color: rgb8ToOklab({ r: sideRgb[0], g: sideRgb[1], b: sideRgb[2] }), variance: 0 };
+  const cap = { color: rgb8ToOklab({ r: capRgb[0], g: capRgb[1], b: capRgb[2] }), variance: 0 };
+  return {
+    blockId,
+    resourceLocation: `minecraft:${blockId}`,
+    // The whole-block blend, exactly as `representativeAppearance` computes
+    // it — the colour that used to be the ONLY thing the matcher could see.
+    color: averageOklab([side.color, cap.color]),
+    textureVariance: 0,
+    appearanceByFace: { up: cap, down: cap, north: side, south: side, east: side, west: side },
+    costTier: "common",
+    acquisitionCost: 0,
+  };
+}
+
+describe("per-face colour matching (a block is matched by the face it actually shows)", () => {
+  // A log whose bark and end grain are far apart: its blended colour is a
+  // muddy brown that appears on neither face. Before per-face matching, that
+  // blend was the only colour the matcher could compare against — for a real
+  // oak_log it sits 0.138 Oklab from both faces, seven times the whole
+  // matching tolerance.
+  const BARK: readonly [number, number, number] = [96, 72, 40];
+  const END_GRAIN: readonly [number, number, number] = [198, 168, 108];
+  const logPalette = [
+    pillarBlock("oak_log", BARK, END_GRAIN),
+    paletteBlock("bark_lookalike", BARK),
+    paletteBlock("grain_lookalike", END_GRAIN),
+  ];
+
+  /** The block chosen at the centre of each face, away from any edge voxel. */
+  function centreOfEachFace(sourceFaceTextures: Record<CubeFaceDirection, DecodedTexture>) {
+    const voxels = buildVoxelGrid({ edgeBlocks: 16, fillStyle: "hollow", sourceFaceTextures, palette: logPalette });
+    const blockIdAt = new Map(voxels.map((voxel) => [`${voxel.x},${voxel.y},${voxel.z}`, voxel.paletteBlock.blockId]));
+    return { up: blockIdAt.get("8,15,8"), north: blockIdAt.get("8,8,0") };
+  }
+
+  it("lets one log serve two different colours: its cap on the top face, its bark on a side", () => {
+    // The log is listed first, so it wins each face only by matching it
+    // exactly — which it can only do if the candidate offers a different
+    // colour per face. Its blended colour matches neither.
+    const sourceFaceTextures = uniformFaceTextures(BARK);
+    sourceFaceTextures.up = solidTexture(16, END_GRAIN);
+    const resolved = centreOfEachFace(sourceFaceTextures);
+    expect(resolved.up).toBe("oak_log");
+    expect(resolved.north).toBe("oak_log");
+  });
+
+  it("will not use a log on a face whose colour is on the log's OTHER face", () => {
+    // The sharp case. The top face wants bark colour, but a normally-placed
+    // log shows end grain there — so the log must lose to a block that
+    // really is that colour on top. Matching the blended colour could never
+    // make this distinction: it is the same number on every face.
+    const sourceFaceTextures = uniformFaceTextures(BARK);
+    const resolved = centreOfEachFace(sourceFaceTextures);
+    expect(resolved.up).toBe("bark_lookalike");
+    expect(resolved.north).toBe("oak_log");
+  });
+
+  it("offers the same block a different colour on a side than on the cap", () => {
+    // One block, two faces, two colours: the up face wants the cap and the
+    // side wants the bark, and a single blended colour can serve neither.
+    const sideCandidates = candidatesFacing(logPalette, ["north"]);
+    const capCandidates = candidatesFacing(logPalette, ["up"]);
+    const logSide = sideCandidates.find((c) => c.item.blockId === "oak_log")!;
+    const logCap = capCandidates.find((c) => c.item.blockId === "oak_log")!;
+
+    expect(oklabDistance(logSide.color, rgb8ToOklab({ r: BARK[0], g: BARK[1], b: BARK[2] }))).toBeCloseTo(0, 12);
+    expect(oklabDistance(logCap.color, rgb8ToOklab({ r: END_GRAIN[0], g: END_GRAIN[1], b: END_GRAIN[2] }))).toBeCloseTo(
+      0,
+      12,
+    );
+    // And the old single colour was genuinely far from both.
+    const blend = averageOklab([logSide.color, logCap.color]);
+    expect(oklabDistance(blend, logSide.color)).toBeGreaterThan(0.05);
+    expect(oklabDistance(blend, logCap.color)).toBeGreaterThan(0.05);
+  });
+
+  it("scores a flat face as flat, instead of inflating it by the gap to the other face", () => {
+    // Measured around the block's blend, this log's perfectly flat bark
+    // scored ~0.003 of variance — thousands of `color.ts` flatness steps —
+    // and lost the matcher's flatness tie-break to any single-texture block.
+    const logSide = candidatesFacing(logPalette, ["north"]).find((c) => c.item.blockId === "oak_log")!;
+    expect(logSide.variance).toBe(0);
+  });
+});
 
 describe("absolute color fidelity (a texture's hue is never traded for lightness)", () => {
   const fullPalette = paletteFromFixtures([...WOOD_BLOCK_FIXTURES, ...NEUTRAL_EXTREME_FIXTURES]);

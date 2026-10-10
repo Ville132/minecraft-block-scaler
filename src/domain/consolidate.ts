@@ -54,6 +54,83 @@ export interface ConsolidationResult {
  * Failure mode: throws `RangeError` for a non-positive/non-integer
  * `maxDistinctBlocks`.
  */
+/**
+ * Picks which blocks survive the cap, by how much colour they save rather
+ * than by how often they appear.
+ *
+ * WHY not simply the most-used: popularity says nothing about coverage. Two
+ * near-identical greys used 500 times each would both survive while the one
+ * block carrying a hue nothing else covers is dropped for being used 40
+ * times — and every one of those 40 voxels then jumps to a colour that is
+ * nowhere near it. Usage still matters, because an error is paid once per
+ * voxel; it just is not the whole story.
+ *
+ * Greedy: seed with the most-used block, then repeatedly take whichever
+ * candidate most reduces the total error everything else would suffer. That
+ * is the standard k-medoids-style heuristic — not provably optimal, but
+ * monotone, deterministic, and dramatically better than sorting by count.
+ * Cost is `maxDistinctBlocks * candidates^2`, which at a cap of ~12 over the
+ * few hundred distinct blocks a build can use is nothing.
+ *
+ * Error is counted as distance SQUARED, which is what makes it track how the
+ * result looks. Summing plain distance rates 40 voxels pushed an
+ * imperceptible 0.08 as worse than 5 voxels pushed a glaring 0.60, and would
+ * drop the second to fix the first. Squaring says the opposite, and the eye
+ * agrees: a handful of blocks in visibly the wrong colour ruins a wall that
+ * a slight overall shift would not.
+ */
+function chooseSurvivors(
+  countByBlockId: ReadonlyMap<string, number>,
+  blockByBlockId: ReadonlyMap<string, PaletteBlock>,
+  maxDistinctBlocks: number,
+): PaletteBlock[] {
+  // Sorted by usage first so the seed, and every tie after it, is
+  // deterministic regardless of Map iteration order.
+  const candidates = [...blockByBlockId.values()].sort(
+    (a, b) => countByBlockId.get(b.blockId)! - countByBlockId.get(a.blockId)! || a.blockId.localeCompare(b.blockId),
+  );
+
+  const survivors = [candidates[0]!];
+  // Each remaining block's distance to the nearest survivor so far, weighted
+  // by how many voxels would pay it. Updated incrementally as survivors are
+  // added rather than recomputed from scratch.
+  const costByBlockId = new Map(
+    candidates.map((block) => [
+      block.blockId,
+      countByBlockId.get(block.blockId)! * oklabDistanceSquared(block.color, survivors[0]!.color),
+    ]),
+  );
+
+  while (survivors.length < maxDistinctBlocks) {
+    let best: PaletteBlock | undefined;
+    let bestSaving = -1;
+    for (const candidate of candidates) {
+      if (survivors.includes(candidate)) continue;
+      let saving = 0;
+      for (const other of candidates) {
+        const improved =
+          costByBlockId.get(other.blockId)! -
+          countByBlockId.get(other.blockId)! * oklabDistanceSquared(other.color, candidate.color);
+        if (improved > 0) saving += improved;
+      }
+      // Strictly greater, so the first candidate in the usage-sorted order
+      // wins any tie and the result stays deterministic.
+      if (saving > bestSaving) {
+        bestSaving = saving;
+        best = candidate;
+      }
+    }
+    if (best === undefined) break; // unreachable: candidates outnumber survivors here
+    survivors.push(best);
+    for (const other of candidates) {
+      const viaBest = countByBlockId.get(other.blockId)! * oklabDistanceSquared(other.color, best.color);
+      if (viaBest < costByBlockId.get(other.blockId)!) costByBlockId.set(other.blockId, viaBest);
+    }
+  }
+
+  return survivors;
+}
+
 export function consolidateVoxels(voxels: readonly Voxel[], maxDistinctBlocks: number): ConsolidationResult {
   if (!Number.isInteger(maxDistinctBlocks) || maxDistinctBlocks < 1) {
     throw new RangeError(`maxDistinctBlocks must be a positive integer, got ${maxDistinctBlocks}`);
@@ -76,13 +153,8 @@ export function consolidateVoxels(voxels: readonly Voxel[], maxDistinctBlocks: n
     return { voxels, originalBlockCount, consolidatedBlockCount: originalBlockCount, averageColorErrorIntroduced: 0 };
   }
 
-  // Keep the maxDistinctBlocks most-used blocks; ties broken by block
-  // id so the result is fully deterministic regardless of Map iteration order.
-  const sortedByUsageDescending = Array.from(countByBlockId.entries()).sort(
-    ([blockIdA, countA], [blockIdB, countB]) => countB - countA || blockIdA.localeCompare(blockIdB),
-  );
-  const survivingBlockIds = new Set(sortedByUsageDescending.slice(0, maxDistinctBlocks).map(([blockId]) => blockId));
-  const survivors = Array.from(survivingBlockIds, (blockId) => blockByBlockId.get(blockId)!);
+  const survivors = chooseSurvivors(countByBlockId, blockByBlockId, maxDistinctBlocks);
+  const survivingBlockIds = new Set(survivors.map((block) => block.blockId));
 
   let totalErrorIntroduced = 0;
   let voxelsRematched = 0;

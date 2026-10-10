@@ -15,7 +15,16 @@ import {
 } from "../assets/modelResolver.ts";
 import { requiresScarceIngredient } from "../assets/recipes.ts";
 import { decodePngTexture, type DecodedTexture } from "../assets/textureDecoder.ts";
-import { averageOklab, linearRgbToOklab, oklabDistanceSquared, rgb8ToLinearRgb, type Oklab } from "./color.ts";
+import { applyBiomeTint, biomeTintFor } from "./biomeTint.ts";
+import {
+  averageOklab,
+  linearRgbToOklab,
+  oklabDistanceSquared,
+  rgb8ToLinearRgb,
+  type Oklab,
+  type Rgb8,
+} from "./color.ts";
+import { CUBE_FACE_DIRECTIONS, type CubeFaceDirection } from "./faces.ts";
 
 export type CostTier = "common" | "precious";
 
@@ -26,6 +35,15 @@ export interface PaletteBlock {
   readonly color: Oklab;
   /** Mean squared Oklab distance of this block's own texture pixels from `color` — how visually "busy" the texture is, 0 for a perfectly flat one. See `color.ts`'s `findBestMatch`, which penalizes a noisy block by this amount when picking fill material. */
   readonly textureVariance: number;
+  /**
+   * What each face shows on its own — see {@link BlockAppearance.byFace}.
+   *
+   * `color`/`textureVariance` above remain the whole-block summary, used
+   * where a block needs one representative colour (the picker swatch, the
+   * material-limit pass). Colour MATCHING uses this instead, because a
+   * replica's surface is made of faces, not of block averages.
+   */
+  readonly appearanceByFace: Readonly<Record<CubeFaceDirection, FaceAppearance>>;
   readonly costTier: CostTier;
   /** See `color.ts`'s `ScoredCandidate.acquisitionCost` and `acquisitionCostOf` in this module. */
   readonly acquisitionCost: number;
@@ -38,14 +56,14 @@ export interface PaletteOptions {
   readonly survivalFriendlyOnly: boolean;
   /** Allows sand/gravel/etc, which fall when unsupported, when true. Default false. */
   readonly allowGravityBlocks: boolean;
-  /** Allows grass/leaves/etc, whose real color depends on biome tint we cannot sample, when true. Default false. */
+  /** Allows grass/leaves/etc, whose colour the game mixes from the surrounding biome rather than the texture file. Default true: `domain/biomeTint.ts` now applies the temperate tint, so they match what gets built instead of coming out grey. Turn it off to build somewhere the tint would be noticeably different. */
   readonly allowBiomeTintedBlocks: boolean;
 }
 
 export const DEFAULT_PALETTE_OPTIONS: PaletteOptions = {
   survivalFriendlyOnly: true,
   allowGravityBlocks: false,
-  allowBiomeTintedBlocks: false,
+  allowBiomeTintedBlocks: true,
 };
 
 /**
@@ -137,7 +155,7 @@ const GRAVITY_BLOCK_IDS: ReadonlySet<string> = new Set([
   "black_concrete_powder",
 ]);
 
-/** Real in-game color depends on the surrounding biome's tint, which a resource-pack texture alone cannot tell us. Gated by `allowBiomeTintedBlocks`.
+/** The game mixes these blocks' colour from the surrounding biome rather than taking it from the texture file, which is stored greyscale. `domain/biomeTint.ts` supplies the temperate tint so they match, and `allowBiomeTintedBlocks` exists for a build whose biome would differ noticeably.
  *
  * NOTE: spruce, birch, and cherry leaves/foliage are deliberately NOT
  * listed — Mojang special-cased all three to a fixed color specifically
@@ -333,15 +351,25 @@ export type TextureDecoder = (pngBytes: Uint8Array) => Promise<DecodedTexture>;
 /** Below this alpha, a pixel is treated as genuinely translucent and disqualifies its texture. Short of 255 on purpose: real resource packs sometimes export a handful of pixels at 254/253 from lossy rounding in an otherwise fully opaque texture, which full-opacity-only would reject for no visible reason. */
 const OPAQUE_ALPHA_THRESHOLD = 250;
 
-/** One raw pixel of a decoded texture, read straight off its RGBA buffer and converted to Oklab — a small free function rather than a stored array entry, so scanning a texture twice (mean, then variance-from-that-mean — see {@link representativeAppearance}) never needs to hold more than one pixel's worth of converted color at a time. */
-function pixelOklabAt(texture: DecodedTexture, pixelStart: number): Oklab {
-  return linearRgbToOklab(
-    rgb8ToLinearRgb({
-      r: texture.pixels[pixelStart]!,
-      g: texture.pixels[pixelStart + 1]!,
-      b: texture.pixels[pixelStart + 2]!,
-    }),
-  );
+/**
+ * One raw pixel of a decoded texture, read straight off its RGBA buffer and
+ * converted to Oklab — a small free function rather than a stored array entry,
+ * so scanning a texture twice (mean, then variance-from-that-mean — see
+ * {@link representativeAppearance}) never needs to hold more than one pixel's
+ * worth of converted color at a time.
+ *
+ * A `tint` is multiplied in first, exactly where the renderer does it. That has
+ * to happen per pixel rather than once on the texture's mean: the multiply is
+ * linear in sRGB bytes but the conversion to Oklab is not, so tinting an
+ * average and averaging tinted pixels give different colors.
+ */
+function pixelOklabAt(texture: DecodedTexture, pixelStart: number, tint: Rgb8 | undefined): Oklab {
+  const stored: Rgb8 = {
+    r: texture.pixels[pixelStart]!,
+    g: texture.pixels[pixelStart + 1]!,
+    b: texture.pixels[pixelStart + 2]!,
+  };
+  return tint === undefined ? linearRgbToOklab(rgb8ToLinearRgb(stored)) : applyBiomeTint(stored, tint);
 }
 
 /**
@@ -371,6 +399,7 @@ async function screenedTextureMean(
   archive: MinecraftArchive,
   textureId: string,
   decodeTexture: TextureDecoder,
+  tint: Rgb8 | undefined,
 ): Promise<{ readonly decoded: DecodedTexture; readonly meanOklab: Oklab } | undefined> {
   if (archive.getFile(textureMetaPath(textureId)) !== undefined) return undefined;
 
@@ -387,7 +416,7 @@ async function screenedTextureMean(
   for (let pixelStart = 0; pixelStart < decoded.pixels.length; pixelStart += 4) {
     const alpha = decoded.pixels[pixelStart + 3]!;
     if (alpha < OPAQUE_ALPHA_THRESHOLD) return undefined;
-    const oklab = pixelOklabAt(decoded, pixelStart);
+    const oklab = pixelOklabAt(decoded, pixelStart, tint);
     sumL += oklab.L;
     sumA += oklab.a;
     sumB += oklab.b;
@@ -397,19 +426,54 @@ async function screenedTextureMean(
 }
 
 /** Mean squared Oklab distance of every pixel of an already-screened (opaque, square) texture from `targetColor` — a second streaming pass over the same raw buffer {@link screenedTextureMean} decoded, not a stored per-pixel array (same reasoning as that function's own doc comment). */
-function meanSquaredDistanceFrom(texture: DecodedTexture, targetColor: Oklab): number {
+function meanSquaredDistanceFrom(texture: DecodedTexture, targetColor: Oklab, tint: Rgb8 | undefined): number {
   let sumSquaredDistance = 0;
   let pixelCount = 0;
   for (let pixelStart = 0; pixelStart < texture.pixels.length; pixelStart += 4) {
-    sumSquaredDistance += oklabDistanceSquared(pixelOklabAt(texture, pixelStart), targetColor);
+    sumSquaredDistance += oklabDistanceSquared(pixelOklabAt(texture, pixelStart, tint), targetColor);
     pixelCount++;
   }
   return sumSquaredDistance / pixelCount;
 }
 
+/** How one face of a block looks on its own: the colour it shows, and how busy that one texture is around that colour. */
+export interface FaceAppearance {
+  readonly color: Oklab;
+  readonly variance: number;
+}
+
+/**
+ * The per-face appearance of a block that shows the same thing on all six
+ * faces — every `cube_all` block, which is most of them.
+ *
+ * Exported because a `PaletteBlock` cannot be built without an
+ * `appearanceByFace`, and a caller holding only one colour (a test fixture, a
+ * synthetic candidate) would otherwise have to spell out six identical
+ * entries and get the invariant subtly wrong.
+ */
+export function uniformAppearanceByFace(
+  color: Oklab,
+  variance: number,
+): Readonly<Record<CubeFaceDirection, FaceAppearance>> {
+  return Object.fromEntries(CUBE_FACE_DIRECTIONS.map((direction) => [direction, { color, variance }])) as Record<
+    CubeFaceDirection,
+    FaceAppearance
+  >;
+}
+
 export interface BlockAppearance {
   readonly color: Oklab;
   readonly variance: number;
+  /**
+   * The same two numbers per face, which is what a replica actually shows.
+   *
+   * For the common single-texture block every entry equals the block-level
+   * pair above. For a log it does not, and the difference is large: oak_log's
+   * blended colour sits 0.138 Oklab from BOTH its bark and its end grain —
+   * seven times the whole matching tolerance — so neither colour it really
+   * shows was ever available to match against.
+   */
+  readonly byFace: Readonly<Record<CubeFaceDirection, FaceAppearance>>;
 }
 
 /**
@@ -450,26 +514,79 @@ export interface BlockAppearance {
  * land an ulp off the identical pixels, leaving a variance near 1e-33):
  * `color.ts`'s matcher compares variances at a coarser resolution for
  * exactly that reason, so this is deliberately not snapped to 0 here.
+ *
+ * `byFace` carries what each face shows on its own, which is what a
+ * replica's surface is actually made of. Note its per-face `variance` is
+ * measured around THAT face's own mean, not the block's: measuring a log's
+ * flat bark against the blended block colour reported it as wildly busy
+ * (~0.0033, thousands of `color.ts` flatness steps) and made every
+ * two-texture block lose the matcher's flatness tie-break to any
+ * single-texture one. Per face, flat bark scores flat.
  */
 async function representativeAppearance(
   archive: MinecraftArchive,
   model: ResolvedCubeModel,
   decodeTexture: TextureDecoder,
+  tint: Rgb8 | undefined,
 ): Promise<BlockAppearance | undefined> {
-  const distinctTextureIds = new Set(Object.values(model.faceTextureIds));
-  const screenedTextures: { readonly decoded: DecodedTexture; readonly meanOklab: Oklab }[] = [];
-  for (const textureId of distinctTextureIds) {
-    const screened = await screenedTextureMean(archive, textureId, decodeTexture);
+  // Keyed by texture AND whether it is tinted, not by texture alone: a block
+  // can show the same file on a tinted face and an untinted one, and those
+  // are two different colours. (A grass block's sides and top, if a pack
+  // builds them from one file.)
+  const screenedByKey = new Map<string, { readonly decoded: DecodedTexture; readonly meanOklab: Oklab }>();
+  const keyFor = (direction: CubeFaceDirection) =>
+    `${model.faceTextureIds[direction]}|${model.tintedFaces[direction] ? "tinted" : "plain"}`;
+
+  for (const direction of CUBE_FACE_DIRECTIONS) {
+    const key = keyFor(direction);
+    if (screenedByKey.has(key)) continue;
+    const faceTint = model.tintedFaces[direction] ? tint : undefined;
+    const screened = await screenedTextureMean(archive, model.faceTextureIds[direction], decodeTexture, faceTint);
     if (screened === undefined) return undefined;
-    screenedTextures.push(screened);
+    screenedByKey.set(key, screened);
   }
+  const screenedTextures = [...screenedByKey.values()];
 
   const color = averageOklab(screenedTextures.map((texture) => texture.meanOklab));
 
-  const perTextureVariances = screenedTextures.map((texture) => meanSquaredDistanceFrom(texture.decoded, color));
+  const tintForKey = (key: string): Rgb8 | undefined => (key.endsWith("|tinted") ? tint : undefined);
+  const perTextureVariances = [...screenedByKey].map(([key, texture]) =>
+    meanSquaredDistanceFrom(texture.decoded, color, tintForKey(key)),
+  );
   const variance = perTextureVariances.reduce((sum, value) => sum + value, 0) / perTextureVariances.length;
 
-  return { color, variance };
+  // Per distinct texture, not per face: six faces share at most a handful of
+  // textures, and each of these is a full scan of a texture that can be 262k
+  // pixels on an HD pack.
+  const appearanceByKey = new Map(
+    [...screenedByKey].map(([key, screened]) => [
+      key,
+      {
+        color: screened.meanOklab,
+        variance: meanSquaredDistanceFrom(screened.decoded, screened.meanOklab, tintForKey(key)),
+      },
+    ]),
+  );
+  const byFace = Object.fromEntries(
+    // Safe to assert: the map was keyed by this very function.
+    CUBE_FACE_DIRECTIONS.map((direction) => [direction, appearanceByKey.get(keyFor(direction))!]),
+  ) as Record<CubeFaceDirection, FaceAppearance>;
+
+  return { color, variance, byFace };
+}
+
+/** {@link applyEmissiveBoost} across every face, so a glowing block reads brighter whichever way it is matched. */
+function applyEmissiveBoostPerFace(
+  blockId: string,
+  byFace: Readonly<Record<CubeFaceDirection, FaceAppearance>>,
+): Readonly<Record<CubeFaceDirection, FaceAppearance>> {
+  if (!EMISSIVE_BLOCK_IDS.has(blockId)) return byFace;
+  return Object.fromEntries(
+    CUBE_FACE_DIRECTIONS.map((direction) => [
+      direction,
+      { ...byFace[direction], color: applyEmissiveBoost(blockId, byFace[direction].color) },
+    ]),
+  ) as Record<CubeFaceDirection, FaceAppearance>;
 }
 
 /** Lifts an emissive block's resolved lightness — see {@link EMISSIVE_BLOCK_IDS}. A no-op for every other block. */
@@ -512,7 +629,7 @@ export async function buildPalette(
     const canonicalVariant = resolveCanonicalVariantCubeModel(archive, blockId);
     if (canonicalVariant === undefined) continue;
 
-    const appearance = await representativeAppearance(archive, canonicalVariant.model, decodeTexture);
+    const appearance = await representativeAppearance(archive, canonicalVariant.model, decodeTexture, biomeTintFor(blockId));
     if (appearance === undefined) continue;
 
     paletteBlocks.push({
@@ -520,6 +637,7 @@ export async function buildPalette(
       resourceLocation: `minecraft:${blockId}`,
       color: applyEmissiveBoost(blockId, appearance.color),
       textureVariance: appearance.variance,
+      appearanceByFace: applyEmissiveBoostPerFace(blockId, appearance.byFace),
       costTier: costTierOf(blockId),
       acquisitionCost: acquisitionCostOf(blockId),
       ...(Object.keys(canonicalVariant.properties).length > 0 && { properties: canonicalVariant.properties }),
@@ -561,7 +679,7 @@ export async function listAxisVariantBlocks(
     const model = resolveAxisVariantCubeModel(archive, blockId, "upright");
     if (model === undefined) continue;
 
-    const appearance = await representativeAppearance(archive, model, decodeTexture);
+    const appearance = await representativeAppearance(archive, model, decodeTexture, biomeTintFor(blockId));
     if (appearance === undefined) continue;
 
     blocks.push({
@@ -569,6 +687,7 @@ export async function listAxisVariantBlocks(
       resourceLocation: `minecraft:${blockId}`,
       color: applyEmissiveBoost(blockId, appearance.color),
       textureVariance: appearance.variance,
+      appearanceByFace: applyEmissiveBoostPerFace(blockId, appearance.byFace),
       costTier: costTierOf(blockId),
       acquisitionCost: acquisitionCostOf(blockId),
     });
